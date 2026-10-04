@@ -19,4 +19,4 @@
 - `npm run check` checks TypeScript without emitting files.
 - `npm run demo -- hello` demonstrates the response path with a mock model, without Gemini or Relay calls.
 - `npm run smoke` verifies the conversation service with a mock model. It does not verify Gemini or Relay.
-- `npm test` tests signed HTTP fixtures, identity mapping, deduplication, send format, Gemini model fallback, and bounded retries with synthetic credentials and storage; it needs a temporary localhost port. A passing test suite does not prove live Gemini, Relay, or Supabase behavior.
+- `npm test` tests signed HTTP fixtures, identity mapping, deduplication, send format, Gemini model fallback, bounded retries, and mock catalog matching/labels with synthetic credentials and storage; it needs a temporary localhost port. A passing test suite does not prove live Gemini, Relay, or Supabase behavior.

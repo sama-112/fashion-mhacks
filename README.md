@@ -22,7 +22,9 @@ The flow is: Relay message → signed webhook → verify and validate → commit
 
 [Relay requires durable event acceptance](https://docs.relayapp.im/webhooks) before acknowledgement. That is why this milestone has one small Supabase inbox table. Its unique event ID absorbs duplicate deliveries. The worker saves the exact answer before sending it, uses an event-derived idempotency key, and resumes pending work after a restart. Each event gets at most five worker attempts, with exponential backoff and Relay's `Retry-After`; each SDK call has a ten-second timeout and at most two SDK retries. Permanent client errors stop automatic attempts. See [idempotency](https://docs.relayapp.im/live/idempotency) and [SDK retries](https://docs.relayapp.im/live/retries).
 
-This milestone answers nonempty text in **human direct messages** using Gemini. Group chats, messages from agents, outbound events, and media-only input are stored and ignored. Full payloads, including ordered media parts, remain in the inbox. Image/vision handling, wardrobe memory, and product integrations are not implemented yet.
+This milestone answers nonempty text in **human direct messages** using Gemini. Group chats, messages from agents, outbound events, and media-only input are stored and ignored. Full payloads, including ordered media parts, remain in the inbox. Image/vision handling, wardrobe memory, and live product integrations are not implemented yet.
+
+`src/shopper/` contains an isolated typed catalog module with synthetic sample products. Every result is marked as mock data; sample prices and availability are illustrative only and do not represent real listings or inventory. Search treats requested sizes/colors as alternatives and requires all non-empty keywords to match. The module is not connected to the Stylist or Relay.
 
 ## Local checks without credentials
 
@@ -38,7 +40,7 @@ npm run demo -- hello
 
 `demo` and `smoke` use a mock Gemini client. The tests use synthetic signed messages, in-memory storage, and an intercepted Relay SDK HTTP transport. They never contact Relay or Supabase. These checks cannot establish live Relay or Supabase integration success.
 
-Rechecked on October 3, 2026 using Node.js `v24.16.0` and npm `11.13.0`: TypeScript checking, the service smoke check, and all ten adapter/worker/HTTP tests passed. Tests cover signatures and timestamps, commit before acknowledgement, storage failure returning 503, identity mapping, outgoing request format, Gemini fallback selection, duplicates, ignored messages, uncertain-send retries, permanent errors, rate limiting, and retry exhaustion. Short live text requests to both configured Gemini models succeeded. Missing credentials cause startup to exit with an actionable configuration error.
+Rechecked on October 3, 2026 using Node.js `v24.16.0` and npm `11.13.0`: TypeScript checking, the service smoke check, and all fifteen tests passed. Tests cover webhook signatures, inbox handling, Relay send/retry behavior, Gemini fallback selection, and isolated mock catalog filtering/labels. Short live text requests to both configured Gemini models succeeded. Missing credentials cause startup to exit with an actionable configuration error.
 
 The SQL migration has **not** been applied to a real Supabase project; the Docker image and CLI forwarding have **not** been run. `skipLibCheck` avoids a conflict in Supabase's browser credential declarations under TypeScript 7; application code still uses strict checking.
 
@@ -72,6 +74,7 @@ Long work can finish after webhook acknowledgement by sending a later API messag
 - `src/integrations/relay.ts`: signature/envelope validation, identity mapping, and SDK sends.
 - `src/server.ts`: `POST /webhooks/relay` and `GET /health`; preserves the raw request body, limits it to 256 KiB, and acknowledges only after the inbox write.
 - `src/services/conversation.ts`: Gemini-powered stylist reply with the configured 3.5 Flash fallback.
+- `src/shopper/`: isolated `ProductCatalog` interface and explicitly labeled mock catalog; not connected to the conversation handler.
 - `src/services/relay-worker.ts`: processes stored messages with bounded retries.
 - `src/db/inbox.ts` and `supabase/migrations/202610030001_relay_event_inbox.sql`: durable acceptance, deduplication, and pending replies.
 - `src/main.ts`, `src/config.ts`, `.env.example`: startup, shutdown, environment configuration, and access checks.

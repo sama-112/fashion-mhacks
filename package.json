@@ -13,7 +13,7 @@
     "check": "tsc --noEmit",
     "demo": "node scripts/demo.ts",
     "smoke": "node scripts/smoke.ts",
-    "test": "node --test scripts/relay.test.ts"
+    "test": "node --test scripts/relay.test.ts scripts/shopper.test.ts"
   },
   "devDependencies": {
     "@types/node": "24.19.1",
