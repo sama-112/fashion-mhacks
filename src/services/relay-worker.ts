@@ -20,9 +20,12 @@ export async function processPending(
         : await handleConversation(event.message, { signal, receivedAt: event.receivedAt, eventId: event.eventId });
       if ("skipDelivery" in reply && reply.skipDelivery) { await inbox.complete(event.eventId); continue; }
       if (event.replyText === null) await inbox.saveReply(event.eventId, reply.text, reply.images);
-      await adapter.sendReply(event.eventId, event.message, reply.text, signal, reply.images);
+      // Voice is spoken by ElevenLabs. Keep product links and images accessible in chat.
+      if (event.message.deliveryKind !== "voice" || reply.images?.length || /https?:\/\/|Wardrobe draft —|Your saved wardrobe:/i.test(reply.text)) {
+        await adapter.sendReply(event.eventId, event.message, reply.text, signal, reply.images);
+      }
       await inbox.complete(event.eventId);
-      console.log(`Reply accepted by Relay: event=${event.eventId} chat=${event.message.conversationId}`);
+      console.log(`${event.message.deliveryKind === "voice" ? "Voice reply ready" : "Reply accepted by Relay"}: event=${event.eventId} chat=${event.message.conversationId}`);
     } catch (error) {
       if (signal?.aborted) return;
       const terminal = isTerminalSendError(error);

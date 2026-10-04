@@ -27,6 +27,9 @@ export interface PathwayRequest {
   readonly text: string;
   readonly wardrobe: readonly { readonly id: string; readonly description: string }[];
   readonly history?: readonly ConversationTurn[];
+  /** Internal onboarding calls must produce fresh directions, not interpret feedback. */
+  readonly generateOnly?: boolean;
+  readonly wardrobeSource?: "video-draft" | "confirmed";
 }
 
 export function emptyPathwayState(): PathwayState {

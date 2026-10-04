@@ -216,7 +216,7 @@ export class RelayAdapter {
   }
 
   async sendReply(eventId: string, message: ConversationMessage, text: string, signal?: AbortSignal, images: readonly ConversationImage[] = []) {
-    if (!message.conversationId || (!message.messageId && message.deliveryKind !== "weekly")) throw new Error("Missing reply identity.");
+    if (!message.conversationId || (!message.messageId && message.deliveryKind !== "weekly" && message.deliveryKind !== "voice")) throw new Error("Missing reply identity.");
     if (images.length > 1) throw new Error("Invalid outfit image count.");
     await this.client.chats.messages.send(message.conversationId, {
       message: {

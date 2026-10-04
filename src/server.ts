@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { EventInbox } from "./db/inbox.ts";
 import type { RelayAdapter } from "./integrations/relay.ts";
 
@@ -24,11 +24,17 @@ function readBody(request: IncomingMessage): Promise<Buffer> {
   });
 }
 
-export function createRelayServer(adapter: RelayAdapter, inbox: EventInbox) {
+export function createRelayServer(adapter: RelayAdapter, inbox: EventInbox, options: {
+  voice?: (request: IncomingMessage, response: ServerResponse) => Promise<void>;
+} = {}) {
   const server = createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/health") {
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ status: "ok", milestone: 1 }));
+      return;
+    }
+    if (request.url === "/v1/chat/completions" && options.voice) {
+      await options.voice(request, response);
       return;
     }
     if (request.url !== "/webhooks/relay") {

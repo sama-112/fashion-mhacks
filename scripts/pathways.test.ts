@@ -145,3 +145,20 @@ test("provider failures are sanitized and abort never starts a model request", a
   await assert.rejects(service.handle({ text: "Give me style pathways", wardrobe }, initial, stop.signal), { name: "AbortError" });
   assert.equal(calledModels.length, 2);
 });
+
+test("automatic generation rejects unrelated actions and labels video items as drafts", async () => {
+  const { service, inputs, calledModels } = fake([
+    { action: "unrelated", targetId: null, reason: null, pathways: [] }, generation,
+  ]);
+  const original = { ...state(), pendingRejectionId: "path-tailored" };
+  const snapshot = structuredClone(original);
+  const result = await service.handle({ text: "Closet onboarding", wardrobe, generateOnly: true, wardrobeSource: "video-draft" }, original);
+  assert.ok(result);
+  assert.deepEqual(calledModels, [models.text, models.fallback]);
+  assert.equal(inputs[0]!.generateOnly, true);
+  assert.equal(inputs[0]!.wardrobeSource, "video-draft");
+  assert.match(result.text, /preliminary/);
+  assert.match(result.text, /From your video draft/);
+  assert.doesNotMatch(result.text, /From your saved wardrobe/);
+  assert.deepEqual(original, snapshot, "Generating previews must not mutate saved preferences.");
+});

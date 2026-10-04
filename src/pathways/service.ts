@@ -15,6 +15,7 @@ If rejecting without an explicit reason, use reject, reason null, pathways []. D
 For a reason supplied in the initial rejection, use revise immediately. Keep known preferences and liked directions in mind while making alternatives. One rejection is tentative feedback, not a universal permanent dislike.
 For generate, targetId and reason are null. For like, reject, clarify or unrelated, pathways is []. For unrelated, targetId and reason are null.
 Make alternatives genuinely different in silhouette, formality or overall styling, not merely different color names. Title each direction, describe its feel, and give a palette and garment staples.
+When generateOnly is true, return action generate with 2-3 fresh directions regardless of pending feedback. When wardrobeSource is video-draft, the items are unconfirmed video detections: frame pathways as preliminary possibilities, never saved or confirmed ownership.
 Use ownedItemIds only from the supplied wardrobe and only when suited to that direction. Staples are suggestions, not ownership claims. Avoid stating any garment is owned in generated prose.
 Do not invent products, prices, shops, availability, purchases, links, or completed actions. All prose must be concise plain text.`;
 
@@ -34,7 +35,7 @@ function bareRejection(message: string, target: StylePathway): boolean {
   return /^(?:no[, ]+)?(?:i\s+)?(?:(?:do\s+not|don't|dont)\s+like|dislike|hate|reject|(?:am\s+)?not\s+(?:into|a\s+fan\s+of))\s+(?:(?:the\s+)?(?:option|pathway|direction|style)\s*)?(?:the\s+)?(?:\d+|one|two|three|first|second|third|it|this|that)(?:\s+(?:one|option|pathway|direction|style))?$/.test(stripped);
 }
 
-function render(state: PathwayState, wardrobe: PathwayRequest["wardrobe"]): string {
+function render(state: PathwayState, wardrobe: PathwayRequest["wardrobe"], source: PathwayRequest["wardrobeSource"]): string {
   const owned = new Map(wardrobe.map(item => [item.id, item.description]));
   const sections = state.pathways.filter(path => path.status !== "rejected").map((path, index) => {
     const descriptions = path.ownedItemIds.flatMap(id => owned.has(id) ? [owned.get(id)!] : []);
@@ -43,10 +44,12 @@ function render(state: PathwayState, wardrobe: PathwayRequest["wardrobe"]): stri
       path.description,
       `Palette: ${path.palette.join(", ")}.`,
       `Suggested staples: ${path.staples.join(", ")}.`,
-      ...(descriptions.length ? [`From your saved wardrobe: ${descriptions.join(", ")}.`] : []),
+      ...(descriptions.length ? [`${source === "video-draft" ? "From your video draft (please confirm)" : "From your saved wardrobe"}: ${descriptions.join(", ")}.`] : []),
     ].join("\n");
   });
-  return [...sections, "Which direction feels like you? Tell me an option you like or dislike, and what works or doesn't."].join("\n\n");
+  return [...sections, source === "video-draft"
+    ? 'Review and correct the clothing draft, then reply "save wardrobe" to refresh these tracks.'
+    : "Which direction feels like you? Tell me an option you like or dislike, and what works or doesn't."].join("\n\n");
 }
 
 export class PathwayService {
@@ -60,7 +63,7 @@ export class PathwayService {
   async handle(request: PathwayRequest, state: PathwayState, signal?: AbortSignal): Promise<{ state: PathwayState; text: string } | null> {
     signal?.throwIfAborted();
     if (!request.text.trim() || request.text.length > 10000) throw new Error("Invalid pathway request.");
-    if (!relevant(request, state)) return null;
+    if (!request.generateOnly && !relevant(request, state)) return null;
     const decision = await this.decide(request, state, signal);
     if (decision.action === "unrelated") return null;
     if (decision.action === "clarify") return { state, text: "Which style pathway do you mean? Tell me its name or option number." };
@@ -96,8 +99,8 @@ export class PathwayService {
     };
     const intro = decision.action === "revise"
       ? `Thanks—that helps. I'll use that feedback when suggesting alternatives to ${target!.title}.`
-      : "Here are some style directions to explore.";
-    return { state: next, text: `${intro}\n\n${render(next, request.wardrobe)}` };
+      : request.wardrobeSource === "video-draft" ? "Potential style tracks based on your video (preliminary)." : "Here are some style directions to explore.";
+    return { state: next, text: `${intro}\n\n${render(next, request.wardrobe, request.wardrobeSource)}` };
   }
 
   private async decide(request: PathwayRequest, state: PathwayState, signal?: AbortSignal): Promise<PathwayDecision> {
@@ -108,6 +111,7 @@ export class PathwayService {
           model,
           contents: JSON.stringify({
             message: request.text, wardrobe: request.wardrobe, history: request.history?.slice(-12) ?? [],
+            generateOnly: request.generateOnly ?? false, wardrobeSource: request.wardrobeSource ?? "confirmed",
             state,
             numberedOptions: state.pathways.filter(path => path.status !== "rejected").map((path, index) => ({ option: index + 1, id: path.id, title: path.title })),
           }),
@@ -116,7 +120,9 @@ export class PathwayService {
             maxOutputTokens: 2500, httpOptions: { timeout: 20000 }, abortSignal: signal,
           },
         });
-        return parsePathwayDecision(JSON.parse(response.text ?? ""), request.wardrobe);
+        const decision = parsePathwayDecision(JSON.parse(response.text ?? ""), request.wardrobe);
+        if (request.generateOnly && decision.action !== "generate") throw new Error("Expected fresh style pathways.");
+        return decision;
       } catch {
         signal?.throwIfAborted();
       }

@@ -2,7 +2,7 @@ import { StylistAgent } from "../agents/stylist/agent.ts";
 import { GeminiStylistModel, type GeminiTextClient } from "../agents/stylist/gemini.ts";
 import type { StylistStore } from "../db/stylist-store.ts";
 import { RelayVideoError } from "../integrations/relay.ts";
-import { PathwayService } from "../pathways/service.ts";
+import { PathwayError, PathwayService } from "../pathways/service.ts";
 import type { StylistShopper } from "../agents/stylist/types.ts";
 import { formatWardrobeReview, reviewWardrobe, WardrobeError, type WardrobeAnalyzer } from "../wardrobe/index.ts";
 import type { ConversationAudio, ConversationHandler, ConversationHistory, ConversationImage, ConversationMessage, ConversationPhoto, ConversationVideo } from "./conversation.ts";
@@ -12,10 +12,12 @@ import { handleWeeklySettings, weeklyRequest } from "../weekly/types.ts";
 import { OutfitImageError, type OutfitImageGenerator } from "../images/outfits.ts";
 import { formatStylistPlan } from "../agents/stylist/plan.ts";
 import { ReferencePhotoError } from "../images/photos.ts";
-import { isPurchaseReport, PurchaseInputError, VoiceNoteError, type PurchaseInterpreter } from "../purchases/index.ts";
+import { isPurchaseReport, isWardrobeAddition, PurchaseInputError, VoiceNoteError, type PurchaseInterpreter } from "../purchases/index.ts";
 import { parseWardrobeDraft } from "../wardrobe/gemini.ts";
+import { CallVisionError, type CallVision } from "../voice/vision.ts";
+import { spokenCommand } from "../voice/commands.ts";
 
-export const CLOSET_HELP = 'Send one MP4, MOV or WebM closet video, up to 50 MiB and two minutes. I will make a draft for you to correct before you reply "save wardrobe".';
+export const CLOSET_HELP = 'Send one MP4, MOV or WebM closet video, up to 50 MiB and two minutes. I will show a clothing draft and potential style tracks. Correct the clothes, then reply "save wardrobe" to confirm and refresh your tracks.';
 export const PHOTO_HELP = 'Optional: send one clear, preferably full-body JPG, PNG or WebP photo of yourself (up to 10 MiB). I will save it privately and use it with Gemini to preview outfits on you. Skip it to keep flat-lay outfit pictures.';
 export const PURCHASE_HELP = 'Tell me "I bought a navy shirt", say it in a voice note, or send a clothing photo captioned "I bought this". I will show a wardrobe draft; correct it and reply "save wardrobe" to add the items.';
 
@@ -29,6 +31,8 @@ export function createStylistConversation(options: {
   downloadPhoto?(message: ConversationMessage, photo: ConversationPhoto, signal?: AbortSignal): Promise<Blob>;
   downloadAudio?(message:ConversationMessage,audio:ConversationAudio,signal?:AbortSignal):Promise<Blob>;
   purchases?:PurchaseInterpreter;
+  callVision?: CallVision;
+  loadCallPhoto?(identity: { userId: string; conversationId: string }, callId: string, path: string, signal?: AbortSignal): Promise<Blob>;
   history?: ConversationHistory;
   images?: OutfitImageGenerator;
   now?: () => Date;
@@ -36,7 +40,7 @@ export function createStylistConversation(options: {
   const stylist = new StylistAgent(new GeminiStylistModel(options.client, options.models), options.catalog);
   const pathways = new PathwayService(options.client, options.models);
   return async (message, context) => {
-    let text = message.text.trim();
+    let text = message.deliveryKind === "voice" ? spokenCommand(message.text) : message.text.trim();
     const videos = message.videos ?? [];
     let photos = message.photos ?? [];
     const audio=message.audio??[];
@@ -51,14 +55,51 @@ export function createStylistConversation(options: {
       if (images?.length) throw new Error("Image response persistence is unavailable.");
       return { text: await options.store.commit(identity,context.eventId!,profile,text) };
     };
+    const automaticTracks = async (wardrobe: typeof profile.data.wardrobe, source: "video-draft" | "confirmed") => {
+      try {
+        return await pathways.handle({
+          text: "Show potential style pathways based on these clothes.", wardrobe,
+          generateOnly: true, wardrobeSource: source,
+        }, profile.data.pathways, context.signal);
+      } catch (error) {
+        context.signal?.throwIfAborted();
+        if (error instanceof PathwayError) return null;
+        throw error;
+      }
+    };
     const now = options.now?.() ?? new Date();
+    if (message.deliveryKind === "voice" && message.callPhoto) {
+      const reference = message.callPhoto;
+      if (!reference.storagePath) return finish('I do not have a recent camera view. Turn your camera on, hold the clothing still, and ask again. You can also describe the item or send a clothing photo in our chat.');
+      if (!options.loadCallPhoto) return finish("Camera analysis isn't configured yet. Describe the clothes to me or send a photo in our chat.");
+      const addition = isPurchaseReport(text) || isWardrobeAddition(text)
+        || /^(?:add|record) (?:this|these)(?: to (?:my |the )?(?:wardrobe|closet))?$/i.test(text);
+      if (addition && profile.data.draft) return finish('You have a wardrobe draft waiting for review. Say "save my wardrobe" or "cancel the draft" before adding more clothes.');
+      try {
+        const photo = await options.loadCallPhoto(identity, reference.callId, reference.storagePath, context.signal);
+        if (addition) {
+          if (!options.purchases) return finish("Clothing extraction isn't configured yet. Please describe the item.");
+          const items = await options.purchases.fromPhoto(photo, text, context.signal);
+          if (!items.length) return finish("I couldn't identify clothing on camera. Hold the garment still in good light or describe it. Nothing has been added.");
+          profile.data.draft = { items, mediaPath: null, mode: "append" };
+          return finish(`Check these clothes from your camera before I add them.\n\n${formatWardrobeReview(items)}\n\nYou can say "change item one to navy shirt", "remove item two", or "save my wardrobe".`);
+        }
+        if (!options.callVision) return finish("Camera analysis isn't configured yet. Please describe what you're showing me.");
+        const visibleClothes = await options.callVision.describe(photo, text, context.signal);
+        text = `${text}\n\nCurrent camera clothing observation (not saved wardrobe ownership): ${visibleClothes}`;
+      } catch (error) {
+        context.signal?.throwIfAborted();
+        if (error instanceof CallVisionError || error instanceof PurchaseInputError || error instanceof ReferencePhotoError) return finish(new CallVisionError().message);
+        throw error;
+      }
+    }
     if (audio.length) {
       if (audio.length!==1 || videos.length) return finish("Please send one voice note at a time, separately from a closet video.");
       if (!options.purchases || !options.downloadAudio) return finish("Voice notes aren't configured on this backend yet. Please type what you bought.");
       try {
         const recording=await options.downloadAudio(message,audio[0]!,context.signal);
         const transcript=await options.purchases.transcribe(recording,context.signal);
-        text=[text,transcript].filter(Boolean).join("\n");
+        text=spokenCommand([text,transcript].filter(Boolean).join("\n"));
         if (text.length>10000)throw new VoiceNoteError();
       } catch(error) {
         context.signal?.throwIfAborted();
@@ -108,7 +149,7 @@ export function createStylistConversation(options: {
       return finish('I will use flat-lay outfit pictures. You can send a personal photo later to enable previews on you.');
     }
     if (message.deliveryKind === "weekly" && !profile.data.weekly.enabled) return { text: "", skipDelivery: true };
-    if (!videos.length && message.deliveryKind!=="weekly" && isPurchaseReport(text)) {
+    if (!videos.length && message.deliveryKind!=="weekly" && (isPurchaseReport(text) || (!profile.data.draft && isWardrobeAddition(text)))) {
       if (profile.data.draft) return finish('You have a wardrobe draft waiting for review. Reply "save wardrobe" or "cancel" before adding a purchase.');
       if (/^(?:add|record) (?:a |my |this |these )?purchase[.!]?$/i.test(text))return finish(PURCHASE_HELP);
       try {
@@ -122,9 +163,9 @@ export function createStylistConversation(options: {
           if (!options.purchases)return finish("Purchase recording isn't configured on this backend yet.");
           items=await options.purchases.fromText(text,context.signal);
         }
-        if (!items.length)return finish("What clothing did you buy? Describe the items, give an item number from my latest suggestions, or send a clothing photo.");
+        if (!items.length)return finish("What clothing should I add for review? Describe the items you own, give an item number from my latest suggestions, or show the clothing on camera during a call.");
         profile.data.draft={items,mediaPath:null,mode:"append"};
-        return finish(`Let's add your purchase after you check this list.\n\n${formatWardrobeReview(items)}`);
+        return finish(`Let's add these clothes after you check this list.\n\n${formatWardrobeReview(items)}`);
       } catch(error) {
         context.signal?.throwIfAborted();
         if(error instanceof PurchaseInputError || error instanceof WardrobeError)return finish(new PurchaseInputError().message);
@@ -145,7 +186,10 @@ export function createStylistConversation(options: {
         const items = await options.analyzer.analyze(video, context.signal);
         const mediaPath = await options.store.saveVideo(identity, context.eventId, video);
         profile.data.draft = { items, mediaPath, mode: "append" };
-        return finish(formatWardrobeReview(items));
+        if (!items.length) return finish(formatWardrobeReview(items));
+        const tracks = await automaticTracks(items, "video-draft");
+        // Preview directions do not change saved preferences or wardrobe ownership.
+        return finish(`${formatWardrobeReview(items)}\n\n${tracks?.text ?? 'I could not generate style tracks right now. I will try again when you save the wardrobe.'}\n\nReview the clothing draft first. After "save wardrobe", I will refresh the tracks using your corrections; then you can tell me which direction you like.`);
       } catch (error) {
         context.signal?.throwIfAborted();
         if (error instanceof WardrobeError || error instanceof RelayVideoError) return finish(error.message);
@@ -162,6 +206,11 @@ export function createStylistConversation(options: {
         if (combined.size > 200) return finish("This wardrobe supports 200 items. Please remove items from the draft before saving.");
         profile.data.wardrobe = [...combined.values()];
         profile.data.draft = null;
+        if (draft.mediaPath) {
+          const tracks = await automaticTracks(profile.data.wardrobe, "confirmed");
+          if (tracks) profile.data.pathways = tracks.state;
+          return finish(`Saved your reviewed wardrobe (${combined.size} items).\n\n${tracks?.text ?? 'Your clothes are saved, but I could not generate style tracks right now. Say "show style pathways" to try again.'}\n\nSay "weekly on" for weekly clothing picks.`);
+        }
         return finish(`Saved your reviewed wardrobe (${combined.size} items). Ask me to "show style pathways" to explore directions using your clothes. Say "weekly on" for weekly clothing picks.`);
       }
       if (review.action === "cancel") profile.data.draft = null;

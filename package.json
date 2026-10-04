@@ -11,6 +11,8 @@
     "start": "node --env-file-if-exists=.env src/main.ts",
     "relay:listen": "node --env-file-if-exists=.env scripts/relay-listen.ts",
     "relay:connect": "node --env-file-if-exists=.env scripts/relay-listen.ts --configure",
+    "voice:setup": "node --env-file-if-exists=.env scripts/voice-setup.ts",
+    "voice:check": "node --env-file-if-exists=.env scripts/voice-check.ts",
     "check": "tsc --noEmit",
     "demo": "node scripts/demo.ts",
     "shopper:search": "node --env-file-if-exists=.env scripts/shopper-search.ts",
@@ -19,11 +21,15 @@
   },
   "devDependencies": {
     "@types/node": "24.19.1",
+    "@types/pngjs": "6.0.5",
     "typescript": "7.0.2"
   },
   "dependencies": {
     "@google/genai": "2.27.0",
+    "@relaymessenger/elevenlabs": "0.1.1",
     "@relaymessenger/sdk": "0.5.1",
-    "@supabase/supabase-js": "2.117.2"
+    "@supabase/supabase-js": "2.117.2",
+    "node-webcodecs": "1.3.0",
+    "pngjs": "7.0.0"
   }
 }

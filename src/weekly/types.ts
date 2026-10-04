@@ -5,7 +5,7 @@ export function handleWeeklySettings(text: string, settings: WeeklySettings, now
   if (/^(?:(?:start|enable|turn on) weekly (?:suggestions|picks)|weekly (?:on|suggestions))$/i.test(text)) {
     settings.enabled = true;
     settings.nextDueAt ??= new Date(now.getTime() + WEEK_MS).toISOString();
-    return `Weekly clothing suggestions are on. I'll send a few picks every seven days, starting ${new Date(settings.nextDueAt).toUTCString()}, using your wardrobe, liked styles, and category budgets. Say "weekly picks now" for a preview or "weekly off" to pause.`;
+    return `Weekly clothing suggestions are on. I'll use the Shopper to find clothing items and send retailer links every seven days, starting ${new Date(settings.nextDueAt).toUTCString()}, using your wardrobe, liked styles, and category budgets. Say "weekly picks now" for a preview or "weekly off" to pause.`;
   }
   if (/^(?:(?:stop|pause|disable|turn off) weekly (?:suggestions|picks)|weekly off)$/i.test(text)) {
     settings.enabled = false; settings.nextDueAt = null;

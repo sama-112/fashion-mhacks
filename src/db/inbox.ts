@@ -102,6 +102,22 @@ export function createInbox(url: string, secretKey: string) {
         ];
       });
     },
+    async pendingCalls(): Promise<AcceptedEvent[]> {
+      const { data, error } = await table().select("event_id,agent_id,payload")
+        .eq("payload->>event_type", "call.created")
+        .gte("received_at", new Date(Date.now() - 10 * 60_000).toISOString())
+        .order("received_at", { ascending: false }).limit(20);
+      check(error);
+      return (data ?? []).map(row => ({ eventId: row.event_id, agentId: row.agent_id, payload: row.payload, message: null }));
+    },
+    async voiceReply(eventId: string) {
+      // Wait until any promised chat links/images have actually been sent.
+      const { data, error } = await table().select("reply_text,reply_media").eq("event_id", eventId)
+        .not("completed_at", "is", null).maybeSingle();
+      check(error);
+      return data?.reply_text !== null && typeof data?.reply_text === "string"
+        ? { text: data.reply_text, ...(data.reply_media?.length ? { images: data.reply_media } : {}) } : null;
+    },
     async isPending(eventId: string) {
       const { data, error } = await table().select("event_id").eq("event_id",eventId).is("completed_at",null).maybeSingle();
       check(error);
@@ -127,5 +143,7 @@ export function createInbox(url: string, secretKey: string) {
   } satisfies EventInbox & {
     checkAccess(): Promise<void>;
     recentConversation(message: ConversationMessage, before: string): Promise<ConversationTurn[]>;
+    pendingCalls(): Promise<AcceptedEvent[]>;
+    voiceReply(eventId: string): Promise<import("../services/conversation.ts").ConversationReply | null>;
   };
 }

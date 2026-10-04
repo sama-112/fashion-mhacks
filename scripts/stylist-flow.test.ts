@@ -21,24 +21,39 @@ class MemoryStore implements StylistStore {
 }
 const user = { userId: "user-1", conversationId: "chat-1", messageId: "message-1" };
 const modelPlan = { intro: "Style your shirt with trousers.", outfits: [], questions: [], shoppingCriteria: null };
+const tracks = (id: string) => ({ action: "generate", targetId: null, reason: null, pathways: [
+  { title: "Relaxed layers", description: "Easy silhouettes.", palette: ["navy"], staples: ["overshirt"], ownedItemIds: [id] },
+  { title: "Smart casual", description: "Neat everyday shapes.", palette: ["cream"], staples: ["trousers"], ownedItemIds: [id] },
+] });
 
 test("video -> review -> correction -> explicit save persists only confirmed clothes and supplies them to styling", async () => {
   const store = new MemoryStore();
   let suppliedWardrobe: unknown;
   const handler = createStylistConversation({
     store, models: { text: "test", fallback: "test" }, catalog: new MockProductCatalog(),
-    client: { models: { generateContent: async params => { suppliedWardrobe = JSON.parse(params.contents as string).wardrobe; return { text: JSON.stringify(modelPlan) }; } } },
+    client: { models: { generateContent: async params => {
+      const input = JSON.parse(params.contents as string);
+      suppliedWardrobe = input.wardrobe;
+      return { text: JSON.stringify(input.generateOnly ? tracks(input.wardrobe[0].id) : modelPlan) };
+    } } },
     analyzer: { analyze: async () => [garment] }, downloadVideo: async () => new Blob(["video"], { type: "video/mp4" }),
   });
   const scan = await handler({ ...user, text: "", videos: [{ mediaId: "media-1", mimeType: "video/mp4" }] }, { eventId: "event-1" });
   assert.match(scan.text, /Wardrobe draft/);
+  assert.match(scan.text, /Potential style tracks.*preliminary/);
+  assert.match(scan.text, /From your video draft \(please confirm\): Blue shirt/);
+  assert.doesNotMatch(scan.text, /From your saved wardrobe/);
   assert.deepEqual((await store.load(user)).data.wardrobe, []);
+  assert.deepEqual((await store.load(user)).data.pathways.pathways, []);
   await handler({ ...user, text: "change 1: navy shirt" }, { eventId: "event-2" });
   assert.deepEqual((await store.load(user)).data.wardrobe, []);
   const saved = await handler({ ...user, text: "save wardrobe" }, { eventId: "event-3" });
   assert.match(saved.text, /Saved your reviewed wardrobe/);
+  assert.match(saved.text, /From your saved wardrobe: navy shirt/);
+  assert.doesNotMatch(saved.text, /Blue shirt/);
   assert.equal((await store.load(user)).data.wardrobe[0]!.description, "navy shirt");
   assert.equal((await store.load(user)).data.draft, null);
+  assert.equal((await store.load(user)).data.pathways.pathways.length, 2);
   await handler({ ...user, text: "Style my shirt" }, { eventId: "event-4" });
   assert.deepEqual(suppliedWardrobe, (await store.load(user)).data.wardrobe);
   assert.deepEqual((await store.load({ ...user, userId: "another-user" })).data.wardrobe, []);
@@ -46,9 +61,10 @@ test("video -> review -> correction -> explicit save persists only confirmed clo
 
 test("wardrobe cancellation and ordinary confirmation words cannot silently save a draft", async () => {
   const store = new MemoryStore();
+  let calls = 0;
   const handler = createStylistConversation({
     store, models: { text: "test", fallback: "test" }, catalog: new MockProductCatalog(),
-    client: { models: { generateContent: async () => { assert.fail("Review should not need an AI call."); } } },
+    client: { models: { generateContent: async () => { calls++; return { text: JSON.stringify(tracks(garment.id)) }; } } },
     analyzer: { analyze: async () => [garment] }, downloadVideo: async () => new Blob(["video"], { type: "video/mp4" }),
   });
   await handler({ ...user, text: "", videos: [{ mediaId: "media-1", mimeType: "video/mp4" }] }, { eventId: "scan" });
@@ -57,6 +73,43 @@ test("wardrobe cancellation and ordinary confirmation words cannot silently save
   await handler({ ...user, text: "cancel" }, { eventId: "cancel" });
   assert.equal((await store.load(user)).data.draft, null);
   assert.equal((await store.load(user)).data.wardrobe.length, 0);
+  assert.equal(calls, 1, "Only the initial video preview calls Gemini; review/cancel don't.");
+  assert.deepEqual((await store.load(user)).data.pathways.pathways, []);
+});
+
+test("automatic track failures preserve the review draft and still save corrected clothes", async () => {
+  const store = new MemoryStore();
+  const handler = createStylistConversation({
+    store, models: { text: "primary", fallback: "fallback" }, catalog: new MockProductCatalog(),
+    client: { models: { generateContent: async () => { throw new Error("private provider detail"); } } },
+    analyzer: { analyze: async () => [garment] }, downloadVideo: async () => new Blob(["video"], { type: "video/mp4" }),
+  });
+  const scan = await handler({ ...user, text: "", videos: [{ mediaId: "media-1", mimeType: "video/mp4" }] }, { eventId: "scan" });
+  assert.match(scan.text, /Wardrobe draft/);
+  assert.match(scan.text, /could not generate style tracks/);
+  assert.doesNotMatch(scan.text, /private provider/);
+  assert.equal((await store.load(user)).data.draft!.items.length, 1);
+  await handler({ ...user, text: "change 1: green shirt" }, { eventId: "edit" });
+  const saved = await handler({ ...user, text: "save wardrobe" }, { eventId: "save" });
+  assert.match(saved.text, /clothes are saved.*could not generate/);
+  const profile = await store.load(user);
+  assert.equal(profile.data.wardrobe[0]!.description, "green shirt");
+  assert.equal(profile.data.draft, null);
+  assert.deepEqual(profile.data.pathways.pathways, []);
+});
+
+test("an empty closet scan does not invent tracks or call the pathway model", async () => {
+  const store = new MemoryStore();
+  let calls = 0;
+  const handler = createStylistConversation({
+    store, models: { text: "test", fallback: "test" }, catalog: new MockProductCatalog(),
+    client: { models: { generateContent: async () => { calls++; return { text: "{}" }; } } },
+    analyzer: { analyze: async () => [] }, downloadVideo: async () => new Blob(["video"], { type: "video/mp4" }),
+  });
+  const scan = await handler({ ...user, text: "", videos: [{ mediaId: "media-1", mimeType: "video/mp4" }] }, { eventId: "scan" });
+  assert.match(scan.text, /No clothing items/);
+  assert.equal(calls, 0);
+  assert.deepEqual((await store.load(user)).data.wardrobe, []);
 });
 
 test("saved pathway choices survive a new handler and inform subsequent outfit advice", async () => {

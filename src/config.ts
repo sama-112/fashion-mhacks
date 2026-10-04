@@ -42,3 +42,14 @@ export function geminiVisionModel(): string {
 export function geminiImageModel(): string {
   return process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-3.1-flash-image";
 }
+
+export function voiceConfig(): { apiKey: string; agentId: string; secret: string } | null {
+  const enabled = process.env.VOICE_CALLS_ENABLED?.trim() || "false";
+  if (!["true", "false"].includes(enabled)) throw new Error("VOICE_CALLS_ENABLED must be true or false.");
+  if (enabled === "false") return null;
+  const apiKey = required("ELEVENLABS_API_KEY");
+  const agentId = required("ELEVENLABS_AGENT_ID");
+  const secret = required("ELEVENLABS_BACKEND_SECRET");
+  if (!/^[A-Za-z0-9_-]{8,100}$/.test(agentId) || secret.length < 32) throw new Error("Set valid ElevenLabs voice settings in .env.");
+  return { apiKey, agentId, secret };
+}

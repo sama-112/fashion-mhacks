@@ -21,8 +21,10 @@ export interface ConversationMessage {
   readonly videos?: readonly ConversationVideo[];
   readonly photos?: readonly ConversationPhoto[];
   readonly audio?: readonly ConversationAudio[];
-  // Only our database scheduler creates this flag; webhook input cannot set it.
-  readonly deliveryKind?: "weekly";
+  // Only trusted internal delivery creates this flag; webhook input cannot set it.
+  readonly deliveryKind?: "weekly" | "voice";
+  // Private snapshot reference from a verified live call, never webhook/body input.
+  readonly callPhoto?: { readonly callId: string; readonly storagePath: string | null };
 }
 
 export interface ConversationImage { readonly attachmentId: string; readonly mimeType: string }
