@@ -8,7 +8,7 @@ const wardrobe = [{ id: "shirt-1", description: "My blue cotton shirt" }];
 const minimal = { title: "Relaxed minimal", description: "Easy silhouettes and simple layers.", palette: ["navy", "cream"], staples: ["relaxed trousers", "plain tee"], ownedItemIds: ["shirt-1"] };
 const tailored = { title: "Modern tailored", description: "Structured shapes and neat proportions.", palette: ["charcoal", "white"], staples: ["blazer", "straight trousers"], ownedItemIds: ["shirt-1"] };
 const sporty = { title: "Casual utility", description: "Comfortable layers with practical details.", palette: ["olive", "gray"], staples: ["overshirt", "cargo trousers"], ownedItemIds: ["shirt-1"] };
-const generation = { action: "generate", targetId: null, reason: null, pathways: [minimal, tailored] };
+const generation = { action: "generate", targetId: null, reason: null, pathways: [minimal, tailored, sporty] };
 
 function fake(responses: unknown[]) {
   const inputs: Array<Record<string, unknown>> = [];
@@ -39,11 +39,12 @@ test("pathways generate distinct numbered directions and use only saved wardrobe
   const { service, inputs } = fake([generation]);
   const result = await service.handle({ text: "Show me some style pathways", wardrobe }, emptyPathwayState());
   assert.ok(result);
-  assert.equal(result.state.pathways.length, 2);
+  assert.equal(result.state.pathways.length, 3);
   assert.notEqual(result.state.pathways[0]!.id, result.state.pathways[1]!.id);
   for (const path of result.state.pathways) assert.match(path.id, /^[\da-f-]{36}$/);
   assert.match(result.text, /1\. Relaxed minimal/);
   assert.match(result.text, /2\. Modern tailored/);
+  assert.match(result.text, /3\. Casual utility/);
   assert.match(result.text, /From your saved wardrobe: My blue cotton shirt/);
   assert.match(result.text, /Which direction feels like you/);
   assert.deepEqual(inputs[0]!.wardrobe, wardrobe);
@@ -52,7 +53,8 @@ test("pathways generate distinct numbered directions and use only saved wardrobe
 test("rejecting asks why, then explicit feedback produces alternatives and saved evidence", async () => {
   const { service, inputs } = fake([
     { action: "reject", targetId: "path-tailored", reason: null, pathways: [] },
-    { action: "revise", targetId: "path-tailored", reason: "Too formal for everyday wear", pathways: [sporty] },
+    generation,
+    { action: "revise", targetId: "path-tailored", reason: "Too formal for everyday wear", pathways: [minimal, tailored, sporty] },
   ]);
   const initial = state();
   const rejected = await service.handle({ text: "I don't like option 2", wardrobe }, initial);
@@ -67,13 +69,14 @@ test("rejecting asks why, then explicit feedback produces alternatives and saved
   assert.deepEqual(revised.state.preferences, [{ pathwayId: "path-tailored", pathwayTitle: "Modern tailored", reason: "Too formal for everyday wear", evidence: "It's too formal for everyday wear" }]);
   assert.equal(revised.state.pathways.find(path => path.id === "path-tailored")!.status, "rejected");
   assert.match(revised.text, /Casual utility/);
-  assert.equal((inputs[1]!.state as PathwayState).pendingRejectionId, "path-tailored");
+  assert.equal(rejected.generated?.length,3);
+  assert.equal((inputs[2]!.state as PathwayState).pendingRejectionId, "path-tailored");
 });
 
 test("liked directions are preserved when requesting fresh pathways and revising others", async () => {
   const { service } = fake([
     { action: "like", targetId: "path-minimal", reason: null, pathways: [] },
-    { action: "revise", targetId: "path-tailored", reason: "Too formal", pathways: [sporty] },
+    { action: "revise", targetId: "path-tailored", reason: "Too formal", pathways: [minimal, tailored, sporty] },
     generation,
   ]);
   const liked = await service.handle({ text: "I like option 1", wardrobe }, state());
@@ -90,17 +93,17 @@ test("liked directions are preserved when requesting fresh pathways and revising
 
 test("a bare rejection cannot silently become an inferred preference", async () => {
   for (const text of ["I don't like option 2", "I don't like the second option", "I don't like Modern tailored"]) {
-    const { service } = fake([{ action: "revise", targetId: "path-tailored", reason: "Dislikes formal clothing", pathways: [sporty] }]);
+    const { service } = fake([{ action: "revise", targetId: "path-tailored", reason: "Dislikes formal clothing", pathways: [minimal, tailored, sporty] },generation]);
     const result = await service.handle({ text, wardrobe }, state());
     assert.ok(result);
     assert.deepEqual(result.state.preferences, []);
-    assert.equal(result.state.pathways.length, 2);
+    assert.equal(result.generated?.length, 3);
     assert.match(result.text, /What don't you like/);
   }
 });
 
 test("unknown pathway targets ask for clarification and cannot mutate saved preferences", async () => {
-  const { service } = fake([{ action: "revise", targetId: "invented", reason: "Too formal", pathways: [sporty] }]);
+  const { service } = fake([{ action: "revise", targetId: "invented", reason: "Too formal", pathways: [minimal, tailored, sporty] }]);
   const original = state();
   const result = await service.handle({ text: "I dislike option 9 because it's too formal", wardrobe }, original);
   assert.ok(result);

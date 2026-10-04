@@ -5,13 +5,13 @@ import type { StylistIdentity } from "../db/stylist-store.ts";
 import { validatePhoto, type ReferencePhoto } from "./photos.ts";
 
 export interface OutfitImageAssets {
-  load(identity: StylistIdentity, eventId: string): Promise<{ image: Blob; attachment: ConversationImage | null } | null>;
-  save(identity: StylistIdentity, eventId: string, image: Blob): Promise<void>;
-  attach(identity: StylistIdentity, eventId: string, attachment: ConversationImage): Promise<void>;
+  load(identity: StylistIdentity, eventId: string, slot?: number): Promise<{ image: Blob; attachment: ConversationImage | null } | null>;
+  save(identity: StylistIdentity, eventId: string, image: Blob, slot?: number): Promise<void>;
+  attach(identity: StylistIdentity, eventId: string, attachment: ConversationImage, slot?: number): Promise<void>;
   loadReference?(identity: StylistIdentity, photo: ReferencePhoto): Promise<Blob>;
 }
 export interface OutfitImageGenerator {
-  generate(identity: StylistIdentity, eventId: string, outfit: OutfitSuggestion, signal?: AbortSignal, photo?: ReferencePhoto | null): Promise<ConversationImage>;
+  generate(identity: StylistIdentity, eventId: string, outfit: OutfitSuggestion, signal?: AbortSignal, photo?: ReferencePhoto | null, slot?: number): Promise<ConversationImage>;
 }
 export class OutfitImageError extends Error {
   constructor() { super("I couldn't generate an outfit image right now. Your wardrobe is saved; please try again shortly."); this.name = "OutfitImageError"; }
@@ -27,10 +27,11 @@ export class GeminiOutfitImages implements OutfitImageGenerator {
     client: GeminiOutfitImages["client"], model: string, assets: OutfitImageAssets, upload: GeminiOutfitImages["upload"],
   ) { this.client=client; this.model=model; this.assets=assets; this.upload=upload; }
 
-  async generate(identity: StylistIdentity, eventId: string, outfit: OutfitSuggestion, signal?: AbortSignal, photo?: ReferencePhoto | null): Promise<ConversationImage> {
+  async generate(identity: StylistIdentity, eventId: string, outfit: OutfitSuggestion, signal?: AbortSignal, photo?: ReferencePhoto | null, slot = 0): Promise<ConversationImage> {
     try {
       signal?.throwIfAborted();
-      const existing = await this.assets.load(identity, eventId);
+      if (!Number.isInteger(slot) || slot < 0 || slot > 2) throw new OutfitImageError();
+      const existing = await this.assets.load(identity, eventId, slot);
       if (existing?.attachment) return existing.attachment;
       let image = existing?.image;
       if (!image) {
@@ -57,11 +58,11 @@ export class GeminiOutfitImages implements OutfitImageGenerator {
         const bytes = Buffer.from(data.data, "base64");
         if (!bytes.length || bytes.length > MAX_IMAGE_BYTES) throw new OutfitImageError();
         image = new Blob([bytes], { type: data.mimeType });
-        await this.assets.save(identity, eventId, image);
+        await this.assets.save(identity, eventId, image, slot);
       }
       signal?.throwIfAborted();
       const attachment = await this.upload(image, signal);
-      await this.assets.attach(identity, eventId, attachment);
+      await this.assets.attach(identity, eventId, attachment, slot);
       return attachment;
     } catch {
       signal?.throwIfAborted();

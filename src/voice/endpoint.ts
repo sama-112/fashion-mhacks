@@ -63,6 +63,7 @@ export function createVoiceEndpoint(options: { secret: string; inbox: VoiceInbox
   snapshot?(identity: VoiceIdentity, eventId: string): Promise<string | null>;
 }) {
   return async (request: IncomingMessage, response: ServerResponse) => {
+    console.log("Voice callback received.");
     const stop = new AbortController();
     response.once("close", () => stop.abort());
     try {
@@ -108,6 +109,7 @@ export function createVoiceEndpoint(options: { secret: string; inbox: VoiceInbox
       if (stop.signal.aborted) return;
       if (response.headersSent) { response.end("data: [DONE]\n\n"); return; }
       const status = error instanceof VoiceRequestError ? error.status : 503;
+      console.warn(`Voice callback rejected (HTTP ${status}): ${error instanceof VoiceRequestError ? error.message : "Voice service unavailable."}`);
       response.writeHead(status, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ error: error instanceof VoiceRequestError ? error.message : "Voice service unavailable." }));
     }

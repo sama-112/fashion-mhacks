@@ -28,7 +28,10 @@ const event = (): AcceptedEvent => ({ eventId: randomUUID(), agentId: identity.a
 test("call tokens authenticate the verified caller and reject tampering, expiry and malformed identities", () => {
   const token = mintCallToken(identity, secret, 1000);
   assert.deepEqual(verifyCallToken(token, secret, 1001), identity);
-  assert.throws(() => verifyCallToken(token.replace(/.$/, token.endsWith("a") ? "b" : "a"), secret, 1001));
+  const [data, signature] = token.split(".");
+  // Change signature bytes, rather than unused base64 padding bits in the last character.
+  const changed = `${signature!.startsWith("a") ? "b" : "a"}${signature!.slice(1)}`;
+  assert.throws(() => verifyCallToken(`${data}.${changed}`, secret, 1001));
   assert.throws(() => verifyCallToken(token, secret, 1000 + 15 * 60_000));
   assert.throws(() => verifyCallToken(token, "wrong-secret".repeat(5), 1001));
   assert.throws(() => mintCallToken({ ...identity, userId: "someone-else" }, secret));
@@ -76,7 +79,7 @@ test("duplicate ringing events establish one bridge and secret identity stays ou
 
 test("voice configuration uses the existing backend, private agent access, matching PCM and no default-model fallback", () => {
   const config = voiceAgentConfiguration("https://voice.example", "test-voice");
-  assert.equal(config.conversation_config.agent.prompt.custom_llm.url, "https://voice.example/v1/chat/completions");
+  assert.equal(`${config.conversation_config.agent.prompt.custom_llm.url}/chat/completions`, "https://voice.example/v1/chat/completions");
   assert.deepEqual(config.conversation_config.agent.prompt.custom_llm.request_headers, { "X-Fashion-Call-Token": { variable_name: "secret__fashion_call_token" } });
   assert.equal(config.platform_settings.auth.enable_auth, true);
   assert.equal(config.platform_settings.privacy.record_voice, false);

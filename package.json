@@ -13,6 +13,7 @@
     "relay:connect": "node --env-file-if-exists=.env scripts/relay-listen.ts --configure",
     "voice:setup": "node --env-file-if-exists=.env scripts/voice-setup.ts",
     "voice:check": "node --env-file-if-exists=.env scripts/voice-check.ts",
+    "voice:tunnel": "node --env-file-if-exists=.env scripts/voice-tunnel.ts",
     "check": "tsc --noEmit",
     "demo": "node scripts/demo.ts",
     "shopper:search": "node --env-file-if-exists=.env scripts/shopper-search.ts",

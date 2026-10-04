@@ -46,7 +46,7 @@ export interface ConversationContext {
 }
 
 export type ConversationHandler = (message: ConversationMessage, context?: ConversationContext) => Promise<ConversationReply>;
-export type ConversationHistory = (message: ConversationMessage, before: string) => Promise<readonly ConversationTurn[]>;
+export type ConversationHistory = (message: ConversationMessage, before: string, after?: string) => Promise<readonly ConversationTurn[]>;
 
 export function createConversationHandler(
   client: GeminiTextClient,

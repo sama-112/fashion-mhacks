@@ -17,13 +17,23 @@ try {
     console.log("Calls are disabled. Provide an authorized public HTTPS origin and run npm run voice:setup before the live test.");
     process.exitCode = 1;
   } else {
-    const expected = voiceAgentConfiguration(required("VOICE_PUBLIC_URL"));
     const agent = await elevenLabsRequest(`/v1/convai/agents/${config.agentId}`, config.apiKey);
-    const actual = agent.conversation_config as { agent?: { prompt?: { custom_llm?: { url?: string } } } } | undefined;
-    if (actual?.agent?.prompt?.custom_llm?.url !== expected.conversation_config.agent.prompt.custom_llm.url) throw new Error("Voice callback configuration differs; rerun voice:setup for the current origin.");
+    const actual = agent.conversation_config as { agent?: { prompt?: { llm?: string; custom_llm?: { url?: string }; tools?: Array<{ name?: string; type?: string; expects_response?: boolean }> } } } | undefined;
     await getSignedUrl({ apiKey: config.apiKey, agentId: config.agentId });
+    if (config.mode === "websocket") {
+      if (actual?.agent?.prompt?.llm === "custom-llm" || !actual?.agent?.prompt?.tools?.some(tool => tool.name === "fashion_stylist" && tool.type === "client" && tool.expects_response)) {
+        throw new Error("Voice callback configuration differs; rerun voice:setup -- --websocket.");
+      }
+      console.log("Private ElevenLabs agent and WebSocket Stylist tool: ready. No public voice tunnel is required.");
+      const response = await fetch(`http://127.0.0.1:${process.env.PORT || "3000"}/health`, { signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw new Error("Voice callback backend is unavailable.");
+      console.log("Local backend: ready. Call @fashion_mhacks to verify audible replies.");
+      process.exit(0);
+    }
+    const expected = voiceAgentConfiguration(required("VOICE_PUBLIC_URL"));
+    if (actual?.agent?.prompt?.custom_llm?.url !== expected.conversation_config.agent.prompt.custom_llm.url) throw new Error("Voice callback configuration differs; rerun voice:setup for the current origin.");
     console.log("Private ElevenLabs agent access and callback configuration: ready.");
-    const response = await fetch(expected.conversation_config.agent.prompt.custom_llm.url, { method: "POST", signal: AbortSignal.timeout(10000), headers: { "Content-Type": "application/json" }, body: "{}" });
+    const response = await fetch(`${expected.conversation_config.agent.prompt.custom_llm.url}/chat/completions`, { method: "POST", signal: AbortSignal.timeout(10000), headers: { "Content-Type": "application/json" }, body: "{}" });
     if (response.status !== 401) throw new Error("Voice callback is unavailable or does not reject unauthenticated requests.");
     console.log("Public callback authentication: ready. Call @fashion_mhacks in Relay to verify live speech and camera behavior.");
   }

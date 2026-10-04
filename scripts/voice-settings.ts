@@ -1,10 +1,10 @@
 import { chmodSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
-export type VoiceSetting = "ELEVENLABS_AGENT_ID" | "ELEVENLABS_BACKEND_SECRET" | "VOICE_PUBLIC_URL" | "VOICE_CALLS_ENABLED";
+export type VoiceSetting = "ELEVENLABS_AGENT_ID" | "ELEVENLABS_BACKEND_SECRET" | "VOICE_PUBLIC_URL" | "VOICE_CALLS_ENABLED" | "VOICE_TRANSPORT";
 export function saveVoiceSettings(settings: Partial<Record<VoiceSetting, string>>, path = ".env") {
   let contents = readFileSync(path, "utf8");
   for (const [name, value] of Object.entries(settings)) {
-    if (!["ELEVENLABS_AGENT_ID", "ELEVENLABS_BACKEND_SECRET", "VOICE_PUBLIC_URL", "VOICE_CALLS_ENABLED"].includes(name)
+    if (!["ELEVENLABS_AGENT_ID", "ELEVENLABS_BACKEND_SECRET", "VOICE_PUBLIC_URL", "VOICE_CALLS_ENABLED", "VOICE_TRANSPORT"].includes(name)
       || !/^[A-Za-z0-9_:/.-]+$/.test(value)) throw new Error("Invalid voice setting.");
     const line = `${name}=${value}`;
     const pattern = new RegExp(`^${name}=.*$`, "m");

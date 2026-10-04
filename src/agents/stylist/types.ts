@@ -6,6 +6,7 @@ import type { ShoppingPreferences } from "../../preferences/types.ts";
 export interface WardrobeItem {
   readonly id: string;
   readonly description: string;
+  readonly brand?: string | null;
 }
 
 export interface StylistRequest {
@@ -15,6 +16,9 @@ export interface StylistRequest {
   readonly preferences?: PathwayState;
   readonly shoppingPreferences?: ShoppingPreferences;
   readonly avoidRecentProducts?: boolean;
+  /** A requested product recommendation must search, or ask a necessary clarification. */
+  readonly productRecommendation?: { readonly limit: 1 | 3 };
+  readonly outfitMode?: "closet" | "preview";
 }
 
 export interface OutfitPiece {
@@ -33,6 +37,7 @@ export interface StylistPlan {
   readonly outfits: readonly OutfitSuggestion[];
   readonly questions: readonly string[];
   readonly shoppingCriteria: ShopperCriteria | null;
+  readonly shoppingPairing?: { readonly wardrobeItemId: string; readonly pathwayId: string | null; readonly rationale: string } | null;
 }
 
 export interface StylistAnswer {

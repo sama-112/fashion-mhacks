@@ -107,12 +107,15 @@ const identity={userId:"user-1",conversationId:"chat-1",messageId:"message-1"};
 const modelPlan={intro:"Try this.",outfits:[{name:"Casual",rationale:"Easy to combine.",pieces:[{description:"Blue shirt",wardrobeItemId:null}]}],questions:[],shoppingCriteria:null};
 function handler(store:MemoryStore, shopping=false, images?: Parameters<typeof createStylistConversation>[0]["images"]) {
   return createStylistConversation({store,models:{text:"test",fallback:"test"},catalog:new MockProductCatalog(),
-    client:{models:{generateContent:async()=>({text:JSON.stringify({...modelPlan,shoppingCriteria:shopping?{category:"tops",keywords:["shirt"]}:null})})}},
+    client:{models:{generateContent:async()=>({text:JSON.stringify({...modelPlan,outfits:[],shoppingCriteria:shopping?{category:"tops",keywords:["shirt"]}:null,shoppingPairing:shopping?{wardrobeItemId:"owned",pathwayId:"liked",rationale:"The shirt layers with your jacket."}:null})})}},
     analyzer:{analyze:async()=>[]},downloadVideo:async()=>new Blob(),images,now:()=>now});
 }
 
 test("weekly preview, rejection memory and budgets survive new handlers and stay isolated by user/chat", async () => {
-  const store=new MemoryStore();const run=handler(store,true);
+  const store=new MemoryStore(); const initial=emptyProfile();
+  initial.data.wardrobe=[{id:"owned",description:"Blue jacket",category:"outerwear",colors:["blue"],uncertain:false}];
+  initial.data.pathways={...initial.data.pathways,pathways:[{id:"liked",title:"Relaxed",description:"Relaxed layers",palette:["blue"],staples:["shirt"],ownedItemIds:["owned"],status:"liked"}]};
+  store.data.set(`${identity.userId}:${identity.conversationId}`,initial);const run=handler(store,true);
   await run({...identity,text:"weekly on"},{eventId:"on"});
   const due=(await store.load(identity)).data.weekly.nextDueAt;
   const preview=await run({...identity,text:"weekly picks now"},{eventId:"picks"});
@@ -131,9 +134,8 @@ test("paused weekly events do not invoke Gemini or send a message", async () => 
 });
 
 test("outfit image responses persist the attachment together with the caption and preserve wardrobe", async () => {
-  const store=new MemoryStore();let calls=0;
+  const store=new MemoryStore();const initial=emptyProfile();initial.data.lastOutfits=modelPlan.outfits;store.data.set(`${identity.userId}:${identity.conversationId}`,initial);let calls=0;
   const run=handler(store,false,{generate:async(_identity,event,outfit)=>{calls++;assert.equal(event,"image");assert.equal(outfit.pieces[0]!.description,"Blue shirt");return {attachmentId:"00000000-0000-4000-8000-000000000001",mimeType:"image/png"};}});
-  await run({...identity,text:"Style a shirt"},{eventId:"outfit"});
   const reply=await run({...identity,text:"generate outfit image 1"},{eventId:"image"});
   assert.match(reply.text,/AI-generated outfit concept/);assert.equal(reply.images?.length,1);
   assert.deepEqual(store.replies.get("image"),reply);assert.equal(calls,1);assert.equal((await store.load(identity)).data.wardrobe.length,0);

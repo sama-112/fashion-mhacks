@@ -1,9 +1,10 @@
 import { StylistAgent } from "../agents/stylist/agent.ts";
 import { GeminiStylistModel, type GeminiTextClient } from "../agents/stylist/gemini.ts";
-import type { StylistStore } from "../db/stylist-store.ts";
+import type { PreparedImageTurn, StylistStore } from "../db/stylist-store.ts";
 import { RelayVideoError } from "../integrations/relay.ts";
-import { PathwayError, PathwayService } from "../pathways/service.ts";
-import type { StylistShopper } from "../agents/stylist/types.ts";
+import { PathwayError, PathwayService, pathwayOutfit, type PathwayReply } from "../pathways/service.ts";
+import type { OutfitSuggestion, StylistShopper } from "../agents/stylist/types.ts";
+import { isOutfitImageRequest } from "../images/requests.ts";
 import { formatWardrobeReview, reviewWardrobe, WardrobeError, type WardrobeAnalyzer } from "../wardrobe/index.ts";
 import type { ConversationAudio, ConversationHandler, ConversationHistory, ConversationImage, ConversationMessage, ConversationPhoto, ConversationVideo } from "./conversation.ts";
 import { handleItemFeedback } from "../preferences/feedback.ts";
@@ -16,8 +17,10 @@ import { isPurchaseReport, isWardrobeAddition, PurchaseInputError, VoiceNoteErro
 import { parseWardrobeDraft } from "../wardrobe/gemini.ts";
 import { CallVisionError, type CallVision } from "../voice/vision.ts";
 import { spokenCommand } from "../voice/commands.ts";
+import { clothingRecommendation } from "../agents/stylist/recommendations.ts";
+import { handleProfileReset } from "../preferences/reset.ts";
 
-export const CLOSET_HELP = 'Send one MP4, MOV or WebM closet video, up to 50 MiB and two minutes. I will show a clothing draft and potential style tracks. Correct the clothes, then reply "save wardrobe" to confirm and refresh your tracks.';
+export const CLOSET_HELP = 'Send one MP4, MOV or WebM closet video, up to 50 MiB and two minutes. I will show a clothing draft and three different style tracks, each with a picture and just one or two proposed additions. Correct the clothes and reply "save wardrobe" to confirm them. Choose one or two tracks you like.';
 export const PHOTO_HELP = 'Optional: send one clear, preferably full-body JPG, PNG or WebP photo of yourself (up to 10 MiB). I will save it privately and use it with Gemini to preview outfits on you. Skip it to keep flat-lay outfit pictures.';
 export const PURCHASE_HELP = 'Tell me "I bought a navy shirt", say it in a voice note, or send a clothing photo captioned "I bought this". I will show a wardrobe draft; correct it and reply "save wardrobe" to add the items.';
 
@@ -49,11 +52,56 @@ export function createStylistConversation(options: {
     if (text.toLowerCase() === "hello" && !videos.length && !photos.length && !audio.length) return { text: "Your stylist is connected." };
     if (!message.userId || !message.conversationId || !context?.eventId) throw new Error("Missing stylist turn identity.");
     const identity = { userId: message.userId, conversationId: message.conversationId };
-    const profile = await options.store.load(identity);
+    const currentProfile = await options.store.load(identity);
+    const cutoff = currentProfile.data.historyAfter;
+    // A delayed pre-reset turn must not restore a former wardrobe, draft or image plan.
+    if (cutoff && context.receivedAt && Date.parse(context.receivedAt) < Date.parse(cutoff)) return {text:"",skipDelivery:true};
+    const prepared = await options.store.loadImageTurn?.(identity,context.eventId);
+    if (cutoff && prepared && prepared.profile.data.historyAfter !== cutoff) return {text:"",skipDelivery:true};
+    const profile = prepared?.profile ?? currentProfile;
+    const baseProfile = prepared?.baseProfile ?? structuredClone(profile);
     const finish = async (text: string, images?: readonly ConversationImage[]) => {
       if (options.store.commitResponse) return options.store.commitResponse(identity,context.eventId!,profile,{text,...(images?.length ? {images} : {})});
       if (images?.length) throw new Error("Image response persistence is unavailable.");
       return { text: await options.store.commit(identity,context.eventId!,profile,text) };
+    };
+    const resetCutoff = context.receivedAt ?? (options.now?.() ?? new Date()).toISOString();
+    if (!videos.length && !photos.length && !audio.length && message.deliveryKind !== "weekly") {
+      const reset = handleProfileReset(text,profile,resetCutoff);
+      if (reset) return finish(reset);
+    }
+    const finishImages = async (text: string, outfits: readonly OutfitSuggestion[]) => {
+      if (!options.images || !options.store.commitResponse) return finish(`${text}\n\nOutfit image generation isn't configured on this backend yet.`);
+      const turn: PreparedImageTurn = options.store.saveImageTurn
+        ? await options.store.saveImageTurn(identity,context.eventId!,{profile,baseProfile,text,outfits}) : {profile,baseProfile,text,outfits};
+      // Independent image slots generate together, and each slot reuses its bytes/attachment on retries.
+      const images = await Promise.all(turn.outfits.map((outfit,slot) => options.images!.generate(identity,context.eventId!,outfit,context.signal,turn.profile.data.referencePhoto,slot)));
+      const current = await options.store.load(identity);
+      let committed = turn.profile, caption = turn.text;
+      if (current.version !== turn.profile.version) {
+        // A delayed image retry must preserve newer budgets, wardrobe and photo choices.
+        // Apply only fields changed by this turn whose earlier value is still current.
+        const data = {...current.data}; let conflict = false;
+        for (const key of Object.keys(data) as Array<keyof typeof data>) {
+          const before = turn.baseProfile?.data[key], after = turn.profile.data[key];
+          if (JSON.stringify(before) === JSON.stringify(after)) continue;
+          if (turn.baseProfile && JSON.stringify(current.data[key]) === JSON.stringify(before)) {
+            Object.assign(data,{[key]:after});
+          } else conflict = true;
+        }
+        committed = {version:current.version,data};
+        if (conflict) caption += "\n\nSome settings changed while these pictures were being prepared. I kept your latest settings; these previews show the clothes and styles from your earlier request.";
+      }
+      return options.store.commitResponse(identity,context.eventId!,committed,{text:caption,images});
+    };
+    if (prepared) return finishImages(prepared.text,prepared.outfits);
+    const finishPathways = async (prefix: string, reply: PathwayReply, wardrobe: typeof profile.data.wardrobe, suffix = "") => {
+      const text = [prefix,reply.text,suffix].filter(Boolean).join("\n\n");
+      if (!reply.generated?.length) return finish(text);
+      const label = profile.data.referencePhoto
+        ? "Pictures 1–3 show these styles on your personal photo. AI-generated approximate previews; actual appearance and fit can differ."
+        : 'Pictures 1–3 show the clothes for each style. Send a clear photo of yourself captioned "my photo" to preview future styles on you. AI-generated approximate concepts.';
+      return finishImages(`${text}\n\n${label}`,reply.generated.map(path => pathwayOutfit(path,wardrobe)));
     };
     const automaticTracks = async (wardrobe: typeof profile.data.wardrobe, source: "video-draft" | "confirmed") => {
       try {
@@ -107,6 +155,10 @@ export function createStylistConversation(options: {
         throw error;
       }
     }
+    if (audio.length && !videos.length && !photos.length && message.deliveryKind !== "weekly") {
+      const reset = handleProfileReset(text,profile,resetCutoff);
+      if (reset) return finish(reset);
+    }
     let photoMessage=message;
     if (!photos.length && profile.data.pendingPhoto) {
       if (/^cancel photo$/i.test(text)) {profile.data.pendingPhoto=null;return finish("Canceled that photo question.");}
@@ -135,7 +187,7 @@ export function createStylistConversation(options: {
         }
         profile.data.referencePhoto=await options.store.saveReferencePhoto!(identity,context.eventId,photo);
         profile.data.pendingPhoto=null;
-        return finish('Saved your personal reference photo privately. Future outfit pictures will preview the clothes on you. Ask for an outfit, then say "generate outfit image 1". AI previews are approximate; actual fit can differ.');
+        return finish('Saved your personal reference photo privately. Style paths will now include pictures of you in those styles. You can also ask "show me what I would look like in a black jacket". AI previews are approximate; actual fit can differ.');
       } catch(error) {
         context.signal?.throwIfAborted();
         if (error instanceof PurchaseInputError) return finish(error.message);
@@ -158,7 +210,7 @@ export function createStylistConversation(options: {
         if (number) {
           const item=profile.data.shopping.recommendations[Number(number[1])-1];
           if (!item)return finish("Which item did you buy? Use an item number from my latest suggestions, describe it, or send a clothing photo.");
-          items=parseWardrobeDraft({items:[{description:item.name,category:item.category,colors:[],uncertain:true}]});
+          items=parseWardrobeDraft({items:[{description:item.name,category:item.category,colors:[],uncertain:true,brand:item.brand ?? null}]});
         } else {
           if (!options.purchases)return finish("Purchase recording isn't configured on this backend yet.");
           items=await options.purchases.fromText(text,context.signal);
@@ -175,7 +227,8 @@ export function createStylistConversation(options: {
     if (!videos.length && message.deliveryKind !== "weekly") {
       const settings = handleWeeklySettings(text,profile.data.weekly,now);
       if (settings) return finish(settings);
-      const feedback = handleItemFeedback(text,profile.data.shopping,now);
+      // A new recommendation is not evidence answering a pending rejection/budget question.
+      const feedback = clothingRecommendation(text) ? null : handleItemFeedback(text,profile.data.shopping,now);
       if (feedback) return finish(feedback);
     }
     if (videos.length) {
@@ -189,7 +242,11 @@ export function createStylistConversation(options: {
         if (!items.length) return finish(formatWardrobeReview(items));
         const tracks = await automaticTracks(items, "video-draft");
         // Preview directions do not change saved preferences or wardrobe ownership.
-        return finish(`${formatWardrobeReview(items)}\n\n${tracks?.text ?? 'I could not generate style tracks right now. I will try again when you save the wardrobe.'}\n\nReview the clothing draft first. After "save wardrobe", I will refresh the tracks using your corrections; then you can tell me which direction you like.`);
+        if (tracks) {
+          profile.data.draft.pathways = tracks.state;
+          return finishPathways(formatWardrobeReview(items),tracks,items);
+        }
+        return finish(`${formatWardrobeReview(items)}\n\nI could not generate style tracks right now. I will try again when you save the wardrobe.`);
       } catch (error) {
         context.signal?.throwIfAborted();
         if (error instanceof WardrobeError || error instanceof RelayVideoError) return finish(error.message);
@@ -199,6 +256,13 @@ export function createStylistConversation(options: {
     if (profile.data.draft) {
       const draft = profile.data.draft;
       const review = reviewWardrobe(text, draft.items);
+      if (review.action === "unrecognized" && draft.mediaPath) {
+        const tracks = await pathways.handle({text,wardrobe:draft.items,wardrobeSource:"video-draft"},draft.pathways ?? profile.data.pathways,context.signal);
+        if (tracks) {
+          draft.pathways = tracks.state;
+          return finishPathways("These clothes are still a draft; save wardrobe when you've checked them.",tracks,draft.items);
+        }
+      }
       if (review.action === "confirm") {
         const previous = draft.mode === "replace" ? [] : profile.data.wardrobe;
         const combined = new Map(previous.map(item => [item.description.toLowerCase(), item]));
@@ -207,15 +271,21 @@ export function createStylistConversation(options: {
         profile.data.wardrobe = [...combined.values()];
         profile.data.draft = null;
         if (draft.mediaPath) {
+          if (draft.pathways?.pathways.some(path => path.status === "liked")) {
+            const ids = new Set(profile.data.wardrobe.map(item => item.id));
+            profile.data.pathways = {...draft.pathways,pathways:draft.pathways.pathways.map(path => ({...path,ownedItemIds:path.ownedItemIds.filter(id => ids.has(id))}))};
+            return finish(`Saved your reviewed wardrobe (${combined.size} items). I've kept your chosen style paths. Ask for an outfit using these clothes or for clothing picks that follow your chosen paths. Say "weekly on" for weekly clothing picks.`);
+          }
           const tracks = await automaticTracks(profile.data.wardrobe, "confirmed");
           if (tracks) profile.data.pathways = tracks.state;
-          return finish(`Saved your reviewed wardrobe (${combined.size} items).\n\n${tracks?.text ?? 'Your clothes are saved, but I could not generate style tracks right now. Say "show style pathways" to try again.'}\n\nSay "weekly on" for weekly clothing picks.`);
+          if (tracks) return finishPathways(`Saved your reviewed wardrobe (${combined.size} items).`,tracks,profile.data.wardrobe,'Say "weekly on" for weekly clothing picks.');
+          return finish(`Saved your reviewed wardrobe (${combined.size} items). Your clothes are saved, but I could not generate style tracks right now. Say "show style pathways" to try again.`);
         }
         return finish(`Saved your reviewed wardrobe (${combined.size} items). Ask me to "show style pathways" to explore directions using your clothes. Say "weekly on" for weekly clothing picks.`);
       }
       if (review.action === "cancel") profile.data.draft = null;
       if (review.action === "update") profile.data.draft = { ...draft, items: review.items };
-      return finish(review.text);
+      if (review.action !== "unrecognized" || /^(?:yes|yeah|ok|okay|sure|confirm|save|no)[.!?]?$/i.test(text)) return finish(review.text);
     }
     if (/^(?:show|my|view) wardrobe$/i.test(text)) {
       return finish(profile.data.wardrobe.length
@@ -232,11 +302,11 @@ export function createStylistConversation(options: {
       return finish(formatWardrobeReview(profile.data.draft.items));
     }
     if (/^(?:scan|upload|add) (?:my )?(?:closet|wardrobe|video)$/i.test(text)) return finish(CLOSET_HELP);
-    if (/^(?:help|start)$/i.test(text)) return finish(`${PHOTO_HELP}\n\n${CLOSET_HELP}\n\n${PURCHASE_HELP}\n\nTry "show style pathways", "weekly on", "weekly picks now", "weekly off", "shirts under $40; jackets under $150", or "show budgets". After shopping, say "I don't like item 2". Ask for an outfit, then "generate outfit image 1" to see it.`);
+    if (/^(?:help|start)$/i.test(text)) return finish(`${PHOTO_HELP}\n\n${CLOSET_HELP}\n\n${PURCHASE_HELP}\n\nTry "show style pathways", "recommend a clothing item for my style", "recommend a jacket under $100", "weekly on", "weekly picks now", "weekly off", "shirts under $40; jackets under $150", or "show budgets". After shopping, say "I don't like item 1". Ask for an outfit, then "generate outfit image 1" to see it. To start fresh, send "reset profile" and follow the confirmation.`);
     if (/^save wardrobe$/i.test(text)) return finish(`There is no wardrobe draft waiting to be saved. ${CLOSET_HELP}`);
-    const history = context.receivedAt && options.history ? await options.history(message, context.receivedAt) : [];
-    const request = { text, wardrobe: profile.data.wardrobe, history };
-    const imageRequest = /\b(?:generate|create|show|picture|visuali[sz]e|render)\b.*\b(?:outfit|fit)\b.*\b(?:image|picture|photo|preview)\b|\b(?:generate|create|show|visuali[sz]e|render)\b.*\b(?:image|picture|photo)\b.*\b(?:outfit|fit)\b|^(?:picture|visuali[sz]e|render) (?:my |the )?outfit\b/i.test(text);
+    const history = context.receivedAt && options.history ? await options.history(message, context.receivedAt,profile.data.historyAfter ?? undefined) : [];
+    const request = { text, wardrobe: profile.data.wardrobe, history, outfitMode: "closet" as const };
+    const imageRequest = isOutfitImageRequest(text);
     if (imageRequest && message.deliveryKind !== "weekly") {
       if (!options.images || !options.store.commitResponse) return finish("Outfit image generation isn't configured on this backend yet.");
       const requested = text.match(/\b(?:image|picture|photo|outfit)\s*(\d+)\b/i);
@@ -244,17 +314,16 @@ export function createStylistConversation(options: {
       const usePrevious = /^(?:generate|create|show|render|visuali[sz]e) (?:my |the )?outfit (?:image|picture|photo|preview)(?: \d+)?[.!]?$/i.test(text)
         || /^(?:picture|visuali[sz]e|render) (?:my |the )?outfit(?: \d+)?[.!]?$/i.test(text);
       if (!profile.data.lastOutfits.length || !usePrevious) {
-        const planned = await stylist.respond({ ...request, preferences: profile.data.pathways, shoppingPreferences: profile.data.shopping },context.signal);
+        const planned = await stylist.respond({ ...request, outfitMode:"preview", preferences: profile.data.pathways, shoppingPreferences: profile.data.shopping },context.signal);
         profile.data.lastOutfits = planned.plan.outfits;
       }
       const outfit = profile.data.lastOutfits[index];
       if (!outfit || !outfit.pieces.length) return finish('Which outfit should I illustrate? Ask for an outfit first, then say "generate outfit image 1" or "generate outfit image 2".');
       try {
-        const image = await options.images.generate(identity,context.eventId,outfit,context.signal,profile.data.referencePhoto);
         const label=profile.data.referencePhoto ? `AI-generated outfit preview on your photo: ${outfit.name}. This is an approximate preview; actual garment appearance and fit can differ.`
-          : `AI-generated outfit concept: ${outfit.name}. This is an approximate illustration, not an exact photo or virtual try-on.`;
+          : `AI-generated outfit concept: ${outfit.name}. This is an approximate illustration, not an exact photo or virtual try-on. Send a photo of yourself captioned "my photo" to see future previews on you.`;
         const caption = formatStylistPlan({intro:label,outfits:[outfit],questions:[],shoppingCriteria:null});
-        return finish(caption,[image]);
+        return await finishImages(caption,[outfit]);
       } catch (error) {
         context.signal?.throwIfAborted();
         if (error instanceof OutfitImageError) return finish(error.message);
@@ -262,18 +331,25 @@ export function createStylistConversation(options: {
       }
     }
     const weekly = message.deliveryKind === "weekly" || /^(?:(?:show|get|send|preview) )?weekly (?:picks|suggestions) (?:now|preview)$/i.test(text);
-    if (weekly) {
-      const answer = await stylist.respond({ ...request, text:weeklyRequest(), preferences:profile.data.pathways, shoppingPreferences:profile.data.shopping, avoidRecentProducts:true },context.signal);
-      if (!answer.shopping || !answer.plan.shoppingCriteria) return finish(`I need a little more style context before choosing weekly products. ${answer.text}\n\nTry "show style pathways" and tell me which direction you like.`);
-      profile.data.shopping.recommendations = rememberRecommendations(answer.shopping,answer.plan.shoppingCriteria);
-      profile.data.shopping.recentlySuggestedIds = [...new Set([...profile.data.shopping.recentlySuggestedIds,...profile.data.shopping.recommendations.map(item=>item.id)])].slice(-50);
-      profile.data.lastOutfits = answer.plan.outfits;
-      return finish(`Your weekly clothing picks\n\n${answer.text}\n\nSay "I don't like item 2" to give feedback, or "weekly off" to pause scheduled picks.`);
+    const recommendation = clothingRecommendation(text);
+    if ((weekly || recommendation?.needsChosenStyle) && !profile.data.pathways.pathways.some(path => path.status === "liked")) {
+      const tracks = await pathways.handle({...request,text:"Show three style paths",generateOnly:true},profile.data.pathways,context.signal);
+      if (tracks) {profile.data.pathways=tracks.state;return finishPathways("Choose one or two style paths first, so clothing suggestions match what you like.",tracks,profile.data.wardrobe);}
+    }
+    if (weekly || recommendation) {
+      if ((weekly || recommendation?.needsChosenStyle) && !profile.data.wardrobe.length) return finish(`Save your wardrobe first so I can pair each suggestion with something you own. ${CLOSET_HELP}`);
+      const answer = await stylist.respond({ ...request, text:weekly ? weeklyRequest() : text, preferences:profile.data.pathways, shoppingPreferences:profile.data.shopping, avoidRecentProducts:true, productRecommendation:{limit:weekly ? 3 : recommendation!.limit} },context.signal);
+      if (answer.shopping && answer.plan.shoppingCriteria) {
+        profile.data.shopping.recommendations = rememberRecommendations(answer.shopping,answer.plan.shoppingCriteria);
+        profile.data.shopping.recentlySuggestedIds = [...new Set([...profile.data.shopping.recentlySuggestedIds,...profile.data.shopping.recommendations.map(item=>item.id)])].slice(-50);
+      }
+      if (answer.plan.outfits.length) profile.data.lastOutfits = answer.plan.outfits;
+      return finish(`${weekly ? "Your weekly clothing picks" : recommendation!.limit === 1 ? "Your clothing recommendation" : "Your clothing picks"}\n\n${answer.text}${weekly ? '\n\nSay "weekly off" to pause scheduled picks.' : ""}`);
     }
     const pathwayReply = await pathways.handle(request, profile.data.pathways, context.signal);
     if (pathwayReply) {
       profile.data.pathways = pathwayReply.state;
-      return finish(pathwayReply.text);
+      return finishPathways("",pathwayReply,profile.data.wardrobe);
     }
     const answer = await stylist.respond({ ...request, preferences: profile.data.pathways, shoppingPreferences:profile.data.shopping }, context.signal);
     if (answer.plan.outfits.length) profile.data.lastOutfits = answer.plan.outfits;

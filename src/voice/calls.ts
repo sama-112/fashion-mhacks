@@ -3,6 +3,7 @@ import { ElevenLabsCall } from "@relaymessenger/elevenlabs";
 import type { AcceptedEvent } from "../db/inbox.ts";
 import { mintCallToken, UUID, type VoiceIdentity } from "./auth.ts";
 import { createCallCamera } from "./camera.ts";
+import { websocketToolConnection } from "./websocket-tools.ts";
 
 export function inboundCall(event: AcceptedEvent): VoiceIdentity | null {
   const payload = event.payload as { event_type?: string; data?: { call?: { id?: string; chat_id?: string; status?: string; from?: { id?: string; kind?: string }; to?: Array<{ id?: string; kind?: string }> } } };
@@ -24,6 +25,8 @@ export interface VoiceCallHandle { closed: Promise<void>; close(): void; transpo
 export function createVoiceCalls(options: {
   relay: Relay; apiKey: string; agentId: string; secret: string;
   connect?: typeof ElevenLabsCall.connect;
+  mode?: "http" | "websocket";
+  voiceTurn?(identity: VoiceIdentity, turns: readonly { id: number; text: string }[], signal: AbortSignal): Promise<string>;
 }) {
   type Entry = { identity: VoiceIdentity; promise: Promise<void>; call?: VoiceCallHandle; camera?: ReturnType<typeof createCallCamera> };
   const active = new Map<string, Entry>();
@@ -50,21 +53,41 @@ export function createVoiceCalls(options: {
       const entry: Entry = { identity, promise: Promise.resolve() };
       active.set(identity.callId, entry);
       entry.promise = (async () => {
+        let generatedAudio = 0;
+        let reportedAudio = 0;
+        let diagnosticTimer: NodeJS.Timeout | undefined;
+        const websocket = options.mode === "websocket" ? websocketToolConnection((turns, signal) => {
+          if (!options.voiceTurn) throw new Error("WebSocket voice is unavailable.");
+          return options.voiceTurn(identity, turns, signal);
+        }) : null;
         try {
           const { call } = await options.relay.calls.retrieve(identity.callId);
           if (stopped || !matchesLiveCall(identity, call)) return;
           entry.call = await connect({
             relay: options.relay, callId: identity.callId, inputSampleRate: 16000, rive: false,
             elevenlabs: { apiKey: options.apiKey, agentId: options.agentId,
-              initiationData: { dynamic_variables: { secret__fashion_call_token: mintCallToken(identity, options.secret) } } },
-            onWarning: () => console.warn("Voice transport warning; check call connectivity."),
+              initiationData: websocket ? {} : { dynamic_variables: { secret__fashion_call_token: mintCallToken(identity, options.secret) } } },
+            ...(websocket?.options ?? {}),
+            onEvent: event => {
+              websocket?.tools.event(event);
+              if (event.type === "audio") generatedAudio++;
+            },
+            onWarning: warning => console.warn(warning.startsWith("Relay refused ElevenLabs audio")
+              ? "Voice audio delivery failed at Relay." : "Voice transport warning; check call connectivity."),
           });
           if (entry.call.transport) entry.camera = createCallCamera(entry.call.transport);
+          diagnosticTimer = setInterval(() => {
+            if (!entry.call?.transport || generatedAudio === reportedAudio) return;
+            reportedAudio = generatedAudio;
+            const stats = entry.call.transport.diagnostics();
+            console.log(`Voice audio delivery: generatedChunks=${generatedAudio} sentPackets=${stats.outbound.rtpPackets ?? 0} receivedPackets=${stats.inbound.rtpPackets ?? 0}.`);
+          }, 5000);
+          diagnosticTimer.unref();
           if (stopped) entry.call.close();
           else console.log(`Voice call connected: ${identity.callId}`);
           await entry.call.closed;
         } catch { console.error(`Voice call could not connect: ${identity.callId}. Check ElevenLabs settings and Relay connectivity.`); }
-        finally { entry.camera?.close(); active.delete(identity.callId); }
+        finally { clearInterval(diagnosticTimer); websocket?.tools.close(); entry.camera?.close(); active.delete(identity.callId); }
       })();
     },
     async stop() {

@@ -13,6 +13,8 @@ export interface WardrobeDraft {
   items: readonly WardrobeCandidate[];
   mediaPath: string | null;
   mode: "append" | "replace";
+  /** Preview choices stay separate from confirmed preferences until the clothes are saved. */
+  pathways?: PathwayState;
 }
 export interface StylistProfile {
   wardrobe: readonly WardrobeCandidate[];
@@ -23,17 +25,23 @@ export interface StylistProfile {
   lastOutfits: readonly OutfitSuggestion[];
   referencePhoto: ReferencePhoto | null;
   pendingPhoto: {photo:ConversationPhoto;messageId:string} | null;
+  pendingReset?: boolean;
+  /** Only exchanges received after the last confirmed reset belong to current bot memory. */
+  historyAfter?: string | null;
 }
 export interface StoredProfile { version: number; data: StylistProfile }
+export interface PreparedImageTurn { profile: StoredProfile; baseProfile?: StoredProfile; text: string; outfits: readonly OutfitSuggestion[] }
 export interface StylistStore {
   load(identity: StylistIdentity): Promise<StoredProfile>;
   commit(identity: StylistIdentity, eventId: string, profile: StoredProfile, text: string): Promise<string>;
   commitResponse?(identity: StylistIdentity, eventId: string, profile: StoredProfile, reply: ConversationReply): Promise<ConversationReply>;
   saveVideo(identity: StylistIdentity, eventId: string, video: Blob): Promise<string>;
   saveReferencePhoto?(identity: StylistIdentity, eventId: string, photo: Blob): Promise<ReferencePhoto>;
+  loadImageTurn?(identity: StylistIdentity, eventId: string): Promise<PreparedImageTurn | null>;
+  saveImageTurn?(identity: StylistIdentity, eventId: string, turn: PreparedImageTurn): Promise<PreparedImageTurn>;
 }
 export function emptyProfile(): StoredProfile {
-  return { version: 0, data: { wardrobe: [], draft: null, pathways: emptyPathwayState(), shopping: emptyShoppingPreferences(), weekly: emptyWeeklySettings(), lastOutfits: [], referencePhoto:null, pendingPhoto:null } };
+  return { version: 0, data: { wardrobe: [], draft: null, pathways: emptyPathwayState(), shopping: emptyShoppingPreferences(), weekly: emptyWeeklySettings(), lastOutfits: [], referencePhoto:null, pendingPhoto:null, pendingReset:false, historyAfter:null } };
 }
 
 export function createStylistStore(url: string, secret: string): StylistStore & { checkAccess(): Promise<void>; imageAssets: OutfitImageAssets; enqueueDue(): Promise<number> } {
@@ -55,6 +63,12 @@ export function createStylistStore(url: string, secret: string): StylistStore & 
     if (!data || typeof data.text !== "string" || !Array.isArray(data.images)) throw new Error("Supabase stylist reply could not be committed.");
     return data.images.length ? { text: data.text, images: data.images } : { text: data.text };
   }
+  async function loadImageTurn(identity: StylistIdentity, eventId: string): Promise<PreparedImageTurn | null> {
+    const { data, error } = await client.from("stylist_image_turns").select("turn")
+      .eq("event_id",eventId).eq("user_id",identity.userId).eq("conversation_id",identity.conversationId).maybeSingle();
+    check(error);
+    return data ? data.turn as PreparedImageTurn : null;
+  }
   const imageAssets: OutfitImageAssets = {
     async loadReference(identity,photo) {
       if (!photo.storagePath.startsWith(`${identity.userId}/${identity.conversationId}/reference/`) || photo.storagePath.includes("..")) throw new Error("Supabase reference photo identity mismatch.");
@@ -64,9 +78,9 @@ export function createStylistStore(url: string, secret: string): StylistStore & 
       await validatePhoto(data);
       return data;
     },
-    async load(identity, eventId) {
+    async load(identity, eventId, slot = 0) {
       const { data, error } = await client.from("stylist_image_assets").select("storage_path,attachment")
-        .eq("event_id",eventId).eq("user_id",identity.userId).eq("conversation_id",identity.conversationId).maybeSingle();
+        .eq("event_id",eventId).eq("slot",slot).eq("user_id",identity.userId).eq("conversation_id",identity.conversationId).maybeSingle();
       check(error);
       if (!data) return null;
       const image = await client.storage.from("outfit-images").download(data.storage_path);
@@ -74,22 +88,30 @@ export function createStylistStore(url: string, secret: string): StylistStore & 
       if (!image.data) throw new Error("Supabase outfit image unavailable.");
       return { image: image.data, attachment: data.attachment as ConversationImage | null };
     },
-    async save(identity, eventId, image) {
+    async save(identity, eventId, image, slot = 0) {
       const extension = image.type === "image/jpeg" ? "jpg" : image.type === "image/webp" ? "webp" : "png";
-      const path = `${identity.userId}/${identity.conversationId}/${eventId}.${extension}`;
+      const path = `${identity.userId}/${identity.conversationId}/${eventId}${slot ? `-${slot}` : ""}.${extension}`;
       const upload = await client.storage.from("outfit-images").upload(path,image,{contentType:image.type,upsert:false});
       if (upload.error && String(upload.error.statusCode) !== "409") check(upload.error);
-      const { error } = await client.from("stylist_image_assets").upsert({ event_id:eventId,user_id:identity.userId,conversation_id:identity.conversationId,storage_path:path },{onConflict:"event_id",ignoreDuplicates:true});
+      const { error } = await client.from("stylist_image_assets").upsert({ event_id:eventId,slot,user_id:identity.userId,conversation_id:identity.conversationId,storage_path:path },{onConflict:"event_id,slot",ignoreDuplicates:true});
       check(error);
     },
-    async attach(identity, eventId, attachment) {
+    async attach(identity, eventId, attachment, slot = 0) {
       const { error } = await client.from("stylist_image_assets").update({attachment})
-        .eq("event_id",eventId).eq("user_id",identity.userId).eq("conversation_id",identity.conversationId);
+        .eq("event_id",eventId).eq("slot",slot).eq("user_id",identity.userId).eq("conversation_id",identity.conversationId);
       check(error);
     },
   };
   return {
     imageAssets,
+    loadImageTurn,
+    async saveImageTurn(identity, eventId, turn) {
+      const { error } = await client.from("stylist_image_turns").upsert({ event_id:eventId,user_id:identity.userId,conversation_id:identity.conversationId,turn },{onConflict:"event_id",ignoreDuplicates:true});
+      check(error);
+      const saved = await loadImageTurn(identity,eventId);
+      if (!saved) throw new Error("Supabase image turn unavailable.");
+      return saved;
+    },
     async enqueueDue() {
       const { data, error } = await client.rpc("enqueue_due_weekly_suggestions");
       check(error);
@@ -106,8 +128,10 @@ export function createStylistStore(url: string, secret: string): StylistStore & 
       if (!images.data || images.data.public) throw new Error("Supabase outfit image bucket must be private.");
       const media = await client.from("relay_event_inbox").select("reply_media,delivery_key").limit(1);
       check(media.error);
-      const assets = await client.from("stylist_image_assets").select("event_id").limit(1);
+      const assets = await client.from("stylist_image_assets").select("event_id,slot").limit(1);
       check(assets.error);
+      const turns = await client.from("stylist_image_turns").select("event_id").limit(1);
+      check(turns.error);
     },
     async load(identity) {
       const { data, error } = await client.from("stylist_profiles")

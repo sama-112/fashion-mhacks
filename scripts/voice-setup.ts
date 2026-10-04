@@ -1,17 +1,19 @@
 import { randomBytes } from "node:crypto";
 import { required } from "../src/config.ts";
-import { elevenLabsRequest, voiceAgentConfiguration } from "../src/voice/elevenlabs.ts";
+import { elevenLabsRequest, voiceAgentConfiguration, websocketVoiceAgentConfiguration } from "../src/voice/elevenlabs.ts";
 import { saveVoiceSettings } from "./voice-settings.ts";
 
 try {
   const apiKey = required("ELEVENLABS_API_KEY");
   const argument = process.argv[2];
-  const publicUrl = argument || required("VOICE_PUBLIC_URL");
-  const configuration = voiceAgentConfiguration(publicUrl, process.env.ELEVENLABS_VOICE_ID?.trim());
+  const websocket = argument === "--websocket" || (!argument && process.env.VOICE_TRANSPORT === "websocket");
+  const publicUrl = websocket ? null : argument || required("VOICE_PUBLIC_URL");
+  const configuration = websocket ? websocketVoiceAgentConfiguration(process.env.ELEVENLABS_VOICE_ID?.trim())
+    : voiceAgentConfiguration(publicUrl!, process.env.ELEVENLABS_VOICE_ID?.trim());
   const secret = process.env.ELEVENLABS_BACKEND_SECRET?.trim() || randomBytes(32).toString("hex");
   if (secret.length < 32) throw new Error("Set ELEVENLABS_BACKEND_SECRET to at least 32 characters.");
   // Save the local signing secret before creating remote resources, so retries can reuse it.
-  saveVoiceSettings({ ELEVENLABS_BACKEND_SECRET: secret, VOICE_PUBLIC_URL: new URL(publicUrl).origin });
+  saveVoiceSettings({ ELEVENLABS_BACKEND_SECRET: secret, ...(publicUrl ? { VOICE_PUBLIC_URL: new URL(publicUrl).origin } : {}) });
   let agentId = process.env.ELEVENLABS_AGENT_ID?.trim();
   if (agentId && !/^[A-Za-z0-9_-]{8,100}$/.test(agentId)) throw new Error("Set a valid ELEVENLABS_AGENT_ID.");
   if (agentId) {
@@ -34,8 +36,9 @@ try {
     saveVoiceSettings({ ELEVENLABS_AGENT_ID: agentId });
     console.log("ElevenLabs voice agent ready; its ID was saved privately in .env.");
   }
-  saveVoiceSettings({ VOICE_CALLS_ENABLED: "true" });
-  console.log("Relay voice calls enabled locally. Restart npm start, keep Relay forwarding and the public tunnel running, then call @fashion_mhacks inside Relay.");
+  saveVoiceSettings({ VOICE_CALLS_ENABLED: "true", VOICE_TRANSPORT: websocket ? "websocket" : "http" });
+  console.log(websocket ? "WebSocket voice tools enabled locally. Restart npm start and keep Relay forwarding running; no public voice tunnel is needed."
+    : "Relay HTTP voice calls enabled locally. Restart npm start, keep Relay forwarding and the public tunnel running.");
 } catch (error) {
   const message = error instanceof Error && /^(Set |ElevenLabs configuration)/.test(error.message)
     ? error.message : "Voice setup failed; check ElevenLabs permissions and the public backend URL.";

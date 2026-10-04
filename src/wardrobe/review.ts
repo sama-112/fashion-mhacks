@@ -45,7 +45,7 @@ export function reviewWardrobe(text: string, candidates: readonly WardrobeCandid
       const description = change![2]!.trim();
       if (!validDescription(description)) return result("show", "Use a short description of up to 200 characters on one line, without links.");
       // A correction can change the garment entirely; don't retain guessed attributes.
-      items[position] = { ...items[position]!, description, category: "other", colors: [], uncertain: false };
+      items[position] = { ...items[position]!, description, category: "other", colors: [], uncertain: false, ...(items[position]!.brand !== undefined ? { brand: null } : {}) };
     }
     return result("update");
   }

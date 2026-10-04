@@ -126,7 +126,8 @@ test("Gemini camera vision uses bounded image input and rejects provider links a
   let bad = false;
   const vision = new GeminiCallVision({ models: { generateContent: async params => {
     assert.equal(params.config?.httpOptions?.timeout, 20000); assert.match(JSON.stringify(params.contents), /inlineData/);
-    assert.match(params.config?.systemInstruction as string, /Do not infer ownership/);
+    assert.match(params.config?.systemInstruction as string, /infer ownership/);
+    assert.match(params.config?.systemInstruction as string, /readable labels/);
     return { text: JSON.stringify({ description: bad ? "https://invented.example/shirt" : "A blue shirt; size unclear." }) };
   } } }, "vision-test");
   assert.equal(await vision.describe(image, "What's this?"), "A blue shirt; size unclear.");

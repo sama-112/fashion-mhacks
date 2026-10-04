@@ -43,7 +43,7 @@ export function geminiImageModel(): string {
   return process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-3.1-flash-image";
 }
 
-export function voiceConfig(): { apiKey: string; agentId: string; secret: string } | null {
+export function voiceConfig(): { apiKey: string; agentId: string; secret: string; mode: "http" | "websocket" } | null {
   const enabled = process.env.VOICE_CALLS_ENABLED?.trim() || "false";
   if (!["true", "false"].includes(enabled)) throw new Error("VOICE_CALLS_ENABLED must be true or false.");
   if (enabled === "false") return null;
@@ -51,5 +51,7 @@ export function voiceConfig(): { apiKey: string; agentId: string; secret: string
   const agentId = required("ELEVENLABS_AGENT_ID");
   const secret = required("ELEVENLABS_BACKEND_SECRET");
   if (!/^[A-Za-z0-9_-]{8,100}$/.test(agentId) || secret.length < 32) throw new Error("Set valid ElevenLabs voice settings in .env.");
-  return { apiKey, agentId, secret };
+  const mode = process.env.VOICE_TRANSPORT?.trim() || "http";
+  if (mode !== "http" && mode !== "websocket") throw new Error("Set VOICE_TRANSPORT to websocket or http.");
+  return { apiKey, agentId, secret, mode };
 }

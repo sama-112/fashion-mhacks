@@ -21,6 +21,8 @@ export interface PathwayState {
   readonly pathways: readonly StylePathway[];
   readonly preferences: readonly PathwayFeedback[];
   readonly pendingRejectionId: string | null;
+  /** The three most recently offered directions; numbering never includes old likes. */
+  readonly offeredIds?: readonly string[];
 }
 
 export interface PathwayRequest {

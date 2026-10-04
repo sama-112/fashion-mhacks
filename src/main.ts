@@ -9,7 +9,7 @@ import { createStylistConversation } from "./services/stylist-conversation.ts";
 import { createStylistStore } from "./db/stylist-store.ts";
 import { GeminiWardrobeAnalyzer } from "./wardrobe/index.ts";
 import { runWorker } from "./services/relay-worker.ts";
-import { createGoogleSearchGroundedShopper } from "./shopper/index.ts";
+import { createStylistProductResearcher } from "./agents/stylist/product-search.ts";
 import { GeminiOutfitImages } from "./images/outfits.ts";
 import { createWeeklyTick } from "./weekly/scheduler.ts";
 import { GeminiPurchaseInterpreter } from "./purchases/index.ts";
@@ -18,6 +18,7 @@ import { createVoiceCalls } from "./voice/calls.ts";
 import { createCallSnapshots } from "./voice/snapshots.ts";
 import { GeminiCallVision } from "./voice/vision.ts";
 import { setTimeout as delay } from "node:timers/promises";
+import { createWebsocketVoiceTurn } from "./voice/websocket-tools.ts";
 
 async function main() {
   const port = serverPort();
@@ -38,7 +39,7 @@ async function main() {
   if (mode === "stylist") {
     const client = new GoogleGenAI({ apiKey: required("GEMINI_API_KEY") });
     const models = geminiModels();
-    const researcher = createGoogleSearchGroundedShopper(client, {
+    const researcher = createStylistProductResearcher(client, {
       primary: models.text,
       fallback: models.fallback,
     });
@@ -77,13 +78,15 @@ async function main() {
   const voice = voiceConfig();
   if (voice && mode !== "stylist") throw new Error("CONVERSATION_MODE must be stylist for voice calls.");
   if (voice && !(await relay.me.retrieve()).calls_enabled) throw new Error("Set up voice on a Relay server with calls enabled.");
-  const calls = voice ? createVoiceCalls({ relay, ...voice }) : null;
+  const snapshot = async (identity: Parameters<ReturnType<typeof createVoiceCalls>["snapshot"]>[0], eventId: string) => {
+    const photo = calls?.snapshot(identity);
+    return photo && snapshots ? snapshots.save(identity, eventId, photo) : null;
+  };
+  const voiceTurn = createWebsocketVoiceTurn({ inbox, validate: identity => calls?.validate(identity) ?? Promise.resolve(false), snapshot });
+  const calls = voice ? createVoiceCalls({ relay, ...voice, voiceTurn }) : null;
   const server = createRelayServer(adapter, inbox, {
-    ...(calls && voice ? { voice: createVoiceEndpoint({ secret: voice.secret, inbox, validate: identity => calls.validate(identity),
-      snapshot: async (identity, eventId) => {
-        const photo = calls.snapshot(identity);
-        return photo && snapshots ? snapshots.save(identity, eventId, photo) : null;
-      },
+    ...(calls && voice?.mode === "http" ? { voice: createVoiceEndpoint({ secret: voice.secret, inbox, validate: identity => calls.validate(identity),
+      snapshot,
     }) } : {}),
   });
   await new Promise<void>((resolve, reject) => {

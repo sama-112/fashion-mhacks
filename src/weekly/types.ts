@@ -1,3 +1,5 @@
+import { RECOMMENDATION_INSTRUCTIONS } from "../agents/stylist/recommendations.ts";
+
 export const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 export interface WeeklySettings { enabled: boolean; nextDueAt: string | null }
 export function emptyWeeklySettings(): WeeklySettings { return { enabled: false, nextDueAt: null }; }
@@ -18,5 +20,5 @@ export function handleWeeklySettings(text: string, settings: WeeklySettings, now
 }
 
 export function weeklyRequest(): string {
-  return "Find a few clothing items to suggest this week. Use my liked style pathways, confirmed wardrobe, previous item rejection reasons, and spending limits by clothing type. Choose a useful wardrobe addition, not an item I already own. Supply Shopper criteria for one clothing category and explain how the items could fit my existing clothes. Do not invent products or prices; the Shopper will provide the listings.";
+  return `Find a few clothing items to suggest this week. ${RECOMMENDATION_INSTRUCTIONS}`;
 }

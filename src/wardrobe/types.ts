@@ -4,6 +4,8 @@ export interface WardrobeCandidate {
   readonly category: string;
   readonly colors: readonly string[];
   readonly uncertain: boolean;
+  /** Readable label/logo or explicit user report; null when unidentifiable. */
+  readonly brand?: string | null;
 }
 
 export const MAX_WARDROBE_ITEMS = 40;

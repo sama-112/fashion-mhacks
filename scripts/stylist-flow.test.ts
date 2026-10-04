@@ -24,6 +24,7 @@ const modelPlan = { intro: "Style your shirt with trousers.", outfits: [], quest
 const tracks = (id: string) => ({ action: "generate", targetId: null, reason: null, pathways: [
   { title: "Relaxed layers", description: "Easy silhouettes.", palette: ["navy"], staples: ["overshirt"], ownedItemIds: [id] },
   { title: "Smart casual", description: "Neat everyday shapes.", palette: ["cream"], staples: ["trousers"], ownedItemIds: [id] },
+  { title: "Sporty utility", description: "Practical relaxed shapes.", palette: ["olive"], staples: ["cargo pants"], ownedItemIds: [id] },
 ] });
 
 test("video -> review -> correction -> explicit save persists only confirmed clothes and supplies them to styling", async () => {
@@ -53,7 +54,7 @@ test("video -> review -> correction -> explicit save persists only confirmed clo
   assert.doesNotMatch(saved.text, /Blue shirt/);
   assert.equal((await store.load(user)).data.wardrobe[0]!.description, "navy shirt");
   assert.equal((await store.load(user)).data.draft, null);
-  assert.equal((await store.load(user)).data.pathways.pathways.length, 2);
+  assert.equal((await store.load(user)).data.pathways.pathways.length, 3);
   await handler({ ...user, text: "Style my shirt" }, { eventId: "event-4" });
   assert.deepEqual(suppliedWardrobe, (await store.load(user)).data.wardrobe);
   assert.deepEqual((await store.load({ ...user, userId: "another-user" })).data.wardrobe, []);
@@ -119,8 +120,8 @@ test("saved pathway choices survive a new handler and inform subsequent outfit a
     client: { models: { generateContent: async () => ({ text: JSON.stringify(response) }) } },
     analyzer: { analyze: async () => [] }, downloadVideo: async () => new Blob(),
   });
-  const path = (title: string) => ({ title, description: "A clear style direction.", palette: ["blue"], staples: ["shirt"], ownedItemIds: [] });
-  await make({ action: "generate", targetId: null, reason: null, pathways: [path("Relaxed"), path("Tailored")] })({ ...user, text: "Show style pathways" }, { eventId: "paths" });
+  const path = (title: string) => ({ title, description: "A clear style direction.", palette: ["blue"], staples: [title + " shirt"], ownedItemIds: [] });
+  await make({ action: "generate", targetId: null, reason: null, pathways: [path("Relaxed"), path("Tailored"),path("Sporty")] })({ ...user, text: "Show style pathways" }, { eventId: "paths" });
   const selected = (await store.load(user)).data.pathways.pathways[0]!;
   await make({ action: "like", targetId: selected.id, reason: null, pathways: [] })({ ...user, text: "I like option 1" }, { eventId: "like" });
   assert.equal((await store.load(user)).data.pathways.pathways[0]!.status, "liked");

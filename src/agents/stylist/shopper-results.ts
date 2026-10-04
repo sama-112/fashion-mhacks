@@ -1,7 +1,7 @@
 import type { StylistShopperResult } from "./types.ts";
 
 // Present the Shopper's returned facts directly; Gemini never invents listings.
-export function formatShopperResult(result: StylistShopperResult): string {
+export function formatShopperResult(result: StylistShopperResult, pairing?: string): string {
   if (result.source === "gemini-google-search") {
     const lines: string[] = [result.disclaimer];
     if (!result.products.length) {
@@ -11,9 +11,9 @@ export function formatShopperResult(result: StylistShopperResult): string {
       const price = product.reportedPrice
         ? `\nReported price (verify with retailer): ${product.reportedPrice.amount.toFixed(2)} ${product.reportedPrice.currency}`
         : "\nPrice not reported; check the retailer against your budget.";
-      lines.push(`Item ${index + 1}: ${product.name} — ${product.brand} at ${product.retailer}\n${product.productUrl}${price}\nWhy it matches: ${product.matchReason}\n${product.availability.note}`);
+      lines.push(`Item ${index + 1}: ${product.name} — ${product.brand} at ${product.retailer}\n${product.productUrl}${price}\nWhy it matches: ${product.matchReason}\n${product.availability.note}${pairing ? `\n${pairing}` : ""}`);
     }
-    if (result.products.length) lines.push('Tell me "I don\'t like item 2" and I\'ll ask why.');
+    if (result.products.length) lines.push(`Tell me "I don't like item ${result.products.length > 1 ? 2 : 1}" and I'll ask why.`);
     return lines.join("\n\n");
   }
   const lines: string[] = [result.disclaimer];
@@ -21,7 +21,7 @@ export function formatShopperResult(result: StylistShopperResult): string {
     lines.push("No sample products match those criteria. Try a different color, size, or budget.");
   }
   for (const [index, product] of result.products.slice(0, 3).entries()) {
-    lines.push(`Item ${index + 1}: ${product.name} — ${product.brand}\nIllustrative price: ${product.price.amount.toFixed(2)} ${product.price.currency}\nColors: ${product.colors.join(", ")}; sample sizes: ${product.sizes.join(", ")}\n${product.availability.note}`);
+    lines.push(`Item ${index + 1}: ${product.name} — ${product.brand}\nIllustrative price: ${product.price.amount.toFixed(2)} ${product.price.currency}\nColors: ${product.colors.join(", ")}; sample sizes: ${product.sizes.join(", ")}\n${product.availability.note}${pairing ? `\n${pairing}` : ""}`);
   }
   return lines.join("\n\n");
 }

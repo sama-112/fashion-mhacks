@@ -81,9 +81,9 @@ export function createInbox(url: string, secretKey: string) {
         receivedAt: row.received_at as string,
       }));
     },
-    async recentConversation(message: ConversationMessage, before: string): Promise<ConversationTurn[]> {
+    async recentConversation(message: ConversationMessage, before: string, after?: string): Promise<ConversationTurn[]> {
       if (!message.userId || !message.conversationId) return [];
-      const { data, error } = await table()
+      let query = table()
         .select("message,reply_text")
         .eq("message->>userId", message.userId)
         .eq("message->>conversationId", message.conversationId)
@@ -92,6 +92,8 @@ export function createInbox(url: string, secretKey: string) {
         .lt("received_at", before)
         .order("received_at", { ascending: false })
         .limit(6);
+      if (after) query = query.gt("received_at",after);
+      const { data, error } = await query;
       check(error);
       return (data ?? []).reverse().flatMap(row => {
         const previous = row.message as ConversationMessage | null;
@@ -142,7 +144,7 @@ export function createInbox(url: string, secretKey: string) {
     },
   } satisfies EventInbox & {
     checkAccess(): Promise<void>;
-    recentConversation(message: ConversationMessage, before: string): Promise<ConversationTurn[]>;
+    recentConversation(message: ConversationMessage, before: string, after?: string): Promise<ConversationTurn[]>;
     pendingCalls(): Promise<AcceptedEvent[]>;
     voiceReply(eventId: string): Promise<import("../services/conversation.ts").ConversationReply | null>;
   };

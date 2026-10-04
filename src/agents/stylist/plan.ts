@@ -1,4 +1,4 @@
-import { StylistError, type OutfitSuggestion, type StylistPlan, type WardrobeItem } from "./types.ts";
+import { StylistError, type OutfitSuggestion, type StylistPlan, type StylistRequest, type WardrobeItem } from "./types.ts";
 import type { ProductCategory, ShopperCriteria } from "../../shopper/types.ts";
 
 const categories: readonly ProductCategory[] = ["tops", "bottoms", "dresses", "footwear", "outerwear"];
@@ -48,8 +48,14 @@ export const stylistPlanSchema = {
     },
     questions: { type: "array", maxItems: 3, items: { type: "string" } },
     shoppingCriteria: criteriaSchema,
+    shoppingPairing: {
+      type: ["object", "null"], additionalProperties: false,
+      properties: { wardrobeItemId: { type: "string" }, pathwayId: { type: ["string", "null"] }, rationale: { type: "string" } },
+      required: ["wardrobeItemId", "pathwayId", "rationale"],
+      description: "For product searches with a saved wardrobe: an actual owned garment to pair with EVERY product in this category, a liked pathway ID (null only if no likes), and a styling reason. Otherwise null.",
+    },
   },
-  required: ["intro", "outfits", "questions", "shoppingCriteria"],
+  required: ["intro", "outfits", "questions", "shoppingCriteria", "shoppingPairing"],
 } as const;
 
 function invalid(): never { throw new StylistError("INVALID_PLAN"); }
@@ -101,10 +107,10 @@ function parseCriteria(value: unknown): ShopperCriteria | null {
   return result;
 }
 
-export function parseStylistPlan(value: unknown, wardrobe: readonly WardrobeItem[] = []): StylistPlan {
+export function parseStylistPlan(value: unknown, wardrobe: readonly WardrobeItem[] = [], request?: StylistRequest): StylistPlan {
   const plan = object(value);
   const knownItems = new Map(wardrobe.map(item => [item.id, item.description]));
-  onlyKeys(plan, ["intro", "outfits", "questions", "shoppingCriteria"]);
+  onlyKeys(plan, ["intro", "outfits", "questions", "shoppingCriteria", "shoppingPairing"]);
   const outfits: OutfitSuggestion[] = array(plan.outfits, 2).map(value => {
     const outfit = object(value);
     onlyKeys(outfit, ["name", "rationale", "pieces"]);
@@ -113,18 +119,42 @@ export function parseStylistPlan(value: unknown, wardrobe: readonly WardrobeItem
       onlyKeys(piece, ["description", "wardrobeItemId"]);
       const id = piece.wardrobeItemId;
       if (id !== null && (typeof id !== "string" || !knownItems.has(id))) invalid();
+      if (request?.outfitMode === "closet" && id === null) invalid();
       // A supplied wardrobe item is displayed using its actual description.
       const description = text(id === null ? piece.description : knownItems.get(id), 200);
       return { description, wardrobeItemId: id as string | null };
     });
     if (!pieces.length) invalid();
+    if (new Set(pieces.filter(piece => piece.wardrobeItemId).map(piece => piece.wardrobeItemId)).size !== pieces.filter(piece => piece.wardrobeItemId).length) invalid();
     return { name: text(outfit.name, 80), rationale: text(outfit.rationale, 400), pieces };
   });
+  const shoppingCriteria = parseCriteria(plan.shoppingCriteria);
+  if (request?.productRecommendation) {
+    if (shoppingCriteria && (!shoppingCriteria.category || !shoppingCriteria.keywords?.length)) invalid();
+    if (!shoppingCriteria && !array(plan.questions, 3).length) invalid();
+  }
+  let shoppingPairing: StylistPlan["shoppingPairing"];
+  if (plan.shoppingPairing !== undefined) {
+    shoppingPairing = null;
+    if (plan.shoppingPairing !== null) {
+      const pairing = object(plan.shoppingPairing);
+      onlyKeys(pairing, ["wardrobeItemId", "pathwayId", "rationale"]);
+      const wardrobeItemId = text(pairing.wardrobeItemId, 100);
+      if (!shoppingCriteria || !knownItems.has(wardrobeItemId)) invalid();
+      const pathwayId = pairing.pathwayId === null ? null : text(pairing.pathwayId, 100);
+      const liked = request?.preferences?.pathways.filter(path => path.status === "liked") ?? [];
+      if (pathwayId !== null && !liked.some(path => path.id === pathwayId)) invalid();
+      if (liked.length && pathwayId === null) invalid();
+      shoppingPairing = { wardrobeItemId, pathwayId, rationale: text(pairing.rationale, 300) };
+    }
+  }
+  if (request && wardrobe.length && shoppingCriteria && !shoppingPairing) invalid();
   return {
     intro: text(plan.intro, 500),
     outfits,
     questions: array(plan.questions, 3).map(value => text(value, 200)),
-    shoppingCriteria: parseCriteria(plan.shoppingCriteria),
+    shoppingCriteria,
+    ...(shoppingPairing !== undefined ? { shoppingPairing } : {}),
   };
 }
 

@@ -6,6 +6,7 @@ export type SpendingCategory = typeof spendingCategories[number];
 export interface Recommendation {
   readonly id: string;
   readonly name: string;
+  readonly brand?: string;
   readonly category: ProductCategory;
   readonly spendingCategory: SpendingCategory;
   readonly price?: { amount: number; currency: string };
@@ -88,7 +89,7 @@ export function rememberRecommendations(result: StylistShopperResult, criteria: 
     const kind = spendingCategory(item.name, fallback) ?? "tops";
     const category = productCategory(kind);
     const price = "reportedPrice" in item ? item.reportedPrice : "price" in item ? item.price : undefined;
-    return { id: item.id, name: item.name, category, spendingCategory: kind,
+    return { id: item.id, name: item.name, brand: item.brand, category, spendingCategory: kind,
       ...(price ? { price: { amount: price.amount, currency: price.currency } } : {}),
       ...("productUrl" in item ? { url: item.productUrl } : {}),
     };
