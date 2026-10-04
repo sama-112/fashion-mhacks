@@ -19,4 +19,5 @@
 - `npm run check` checks TypeScript without emitting files.
 - `npm run demo -- hello` demonstrates the response path with a mock model, without Gemini or Relay calls.
 - `npm run smoke` verifies the conversation service with a mock model. It does not verify Gemini or Relay.
-- `npm test` tests signed HTTP fixtures, identity mapping, deduplication, send format, Gemini model fallback, bounded retries, and mock catalog matching/labels with synthetic credentials and storage; it needs a temporary localhost port. A passing test suite does not prove live Gemini, Relay, or Supabase behavior.
+- `npm test` tests signed HTTP fixtures, identity mapping, deduplication, send format, Gemini model fallback, bounded retries, mock catalog matching/labels, and grounded Shopper result validation with synthetic data; it needs a temporary localhost port. A passing test suite does not prove live Gemini, Relay, or Supabase behavior.
+- `npm run shopper:search -- '<JSON request>'` uses Gemini Google Search grounding from the local `.env` key to discover cited product pages. It does not verify stock or place orders.

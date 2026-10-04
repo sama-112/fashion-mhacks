@@ -24,7 +24,7 @@ The flow is: Relay message → signed webhook → verify and validate → commit
 
 This milestone answers nonempty text in **human direct messages** using Gemini. Group chats, messages from agents, outbound events, and media-only input are stored and ignored. Full payloads, including ordered media parts, remain in the inbox. Image/vision handling, wardrobe memory, and live product integrations are not implemented yet.
 
-`src/shopper/` contains an isolated typed catalog module with synthetic sample products. Every result is marked as mock data; sample prices and availability are illustrative only and do not represent real listings or inventory. Search treats requested sizes/colors as alternatives and requires all non-empty keywords to match. The module is not connected to the Stylist or Relay.
+`src/shopper/` contains an isolated typed catalog module with synthetic sample products and a Gemini Google Search grounding path for real product-page discovery. The provisional Stylist request keeps explicitly preferred brands separate from video-reference brands. Mock results are labeled as mock; grounded results require a matching URL citation and mark search-reported prices and all availability as unverified. The module is not connected to the Stylist or Relay and cannot place orders.
 
 ## Local checks without credentials
 
@@ -38,9 +38,17 @@ npm test
 npm run demo -- hello
 ```
 
+To run an explicit live product-discovery query with the local Gemini key:
+
+```sh
+npm run shopper:search -- '{"market":"US","category":"tops","keywords":["linen shirt"],"preferredBrands":[],"referenceBrands":[],"maxResults":3}'
+```
+
+This performs a Google-grounded search and returns cited product pages. Price snippets are source-reported, not independently verified, and availability remains unverified until checked with a retailer.
+
 `demo` and `smoke` use a mock Gemini client. The tests use synthetic signed messages, in-memory storage, and an intercepted Relay SDK HTTP transport. They never contact Relay or Supabase. These checks cannot establish live Relay or Supabase integration success.
 
-Rechecked on October 3, 2026 using Node.js `v24.16.0` and npm `11.13.0`: TypeScript checking, the service smoke check, and all fifteen tests passed. Tests cover webhook signatures, inbox handling, Relay send/retry behavior, Gemini fallback selection, and isolated mock catalog filtering/labels. Short live text requests to both configured Gemini models succeeded. Missing credentials cause startup to exit with an actionable configuration error.
+Rechecked on October 3, 2026 using Node.js `v24.16.0` and npm `11.13.0`: TypeScript checking, the service smoke check, and all twenty Shopper/Relay tests passed. Tests cover webhook signatures, inbox handling, Relay send/retry behavior, Gemini fallback selection, mock catalog filtering/labels, and validation of grounded product citations. A generic live U.S. linen-shirt search returned two retailer product pages with Google grounding citations; prices remain marked unverified and availability remains unknown. Short live text requests to both configured Gemini models succeeded. Missing credentials cause startup to exit with an actionable configuration error.
 
 The SQL migration has **not** been applied to a real Supabase project; the Docker image and CLI forwarding have **not** been run. `skipLibCheck` avoids a conflict in Supabase's browser credential declarations under TypeScript 7; application code still uses strict checking.
 

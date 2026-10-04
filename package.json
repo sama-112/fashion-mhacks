@@ -12,8 +12,9 @@
     "relay:listen": "node --env-file-if-exists=.env scripts/relay-listen.ts",
     "check": "tsc --noEmit",
     "demo": "node scripts/demo.ts",
+    "shopper:search": "node --env-file-if-exists=.env scripts/shopper-search.ts",
     "smoke": "node scripts/smoke.ts",
-    "test": "node --test scripts/relay.test.ts scripts/shopper.test.ts"
+    "test": "node --test scripts/relay.test.ts scripts/shopper.test.ts scripts/shopper-gemini.test.ts"
   },
   "devDependencies": {
     "@types/node": "24.19.1",
