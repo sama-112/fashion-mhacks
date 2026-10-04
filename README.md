@@ -1,6 +1,6 @@
 # MHacks fashion stylist backend
 
-Milestone 1 code is implemented and locally tested. **Live acceptance is pending:** a real `hello` must reach this backend and `Your stylist is connected.` must appear in the same Relay chat. Relay and Supabase account access have not been configured or tested.
+Milestone 1 code is implemented and locally tested. **Live acceptance is pending:** a real Relay text message must reach this backend and receive a Gemini-generated stylist reply in the same Relay chat. Relay and Supabase account access have not been configured or tested.
 
 ## Confirmed contract and decisions
 
@@ -18,11 +18,11 @@ The user supplied [Relay's official docs](https://docs.relayapp.im/). The initia
 
 Sources: [authentication](https://docs.relayapp.im/live/authentication), [event payload](https://docs.relayapp.im/events/message-received), [signatures](https://docs.relayapp.im/webhooks/verify-signatures), [subscriptions](https://docs.relayapp.im/webhooks/subscriptions), [delivery](https://docs.relayapp.im/webhooks/delivery).
 
-The flow is: Relay message → signed webhook → verify and validate → commit to Supabase → HTTP 204 → inbox worker → independent conversation service → send the fixed reply through Relay.
+The flow is: Relay message → signed webhook → verify and validate → commit to Supabase → HTTP 204 → inbox worker → Gemini conversation service → persist the exact reply → send through Relay. Gemini 3.6 Flash is the primary text model; Gemini 3.5 Flash is the fallback.
 
 [Relay requires durable event acceptance](https://docs.relayapp.im/webhooks) before acknowledgement. That is why this milestone has one small Supabase inbox table. Its unique event ID absorbs duplicate deliveries. The worker saves the exact answer before sending it, uses an event-derived idempotency key, and resumes pending work after a restart. Each event gets at most five worker attempts, with exponential backoff and Relay's `Retry-After`; each SDK call has a ten-second timeout and at most two SDK retries. Permanent client errors stop automatic attempts. See [idempotency](https://docs.relayapp.im/live/idempotency) and [SDK retries](https://docs.relayapp.im/live/retries).
 
-This milestone answers nonempty text in **human direct messages**. Group chats, messages from agents, outbound events, and media-only input are stored and ignored. Full payloads, including ordered media parts, remain in the inbox. No AI or fashion logic runs yet.
+This milestone answers nonempty text in **human direct messages** using Gemini. Group chats, messages from agents, outbound events, and media-only input are stored and ignored. Full payloads, including ordered media parts, remain in the inbox. Image/vision handling, wardrobe memory, and product integrations are not implemented yet.
 
 ## Local checks without credentials
 
@@ -36,9 +36,9 @@ npm test
 npm run demo -- hello
 ```
 
-`demo` and `smoke` call the service directly. The tests use synthetic signed messages, in-memory storage, and an intercepted SDK HTTP transport. They never contact Relay or Supabase. These checks cannot establish live integration success.
+`demo` and `smoke` use a mock Gemini client. The tests use synthetic signed messages, in-memory storage, and an intercepted Relay SDK HTTP transport. They never contact Relay or Supabase. These checks cannot establish live Relay or Supabase integration success.
 
-Verified on October 3, 2026 using Node.js `v24.21.0` and npm `11.19.0`: TypeScript checking, the service smoke check, and nine adapter/worker/HTTP tests passed. Tests cover signatures and timestamps, commit before acknowledgement, storage failure returning 503, identity mapping, outgoing request format, duplicates, ignored messages, uncertain-send retries, permanent errors, rate limiting, and retry exhaustion. Missing credentials cause startup to exit with an actionable configuration error.
+Rechecked on October 3, 2026 using Node.js `v24.16.0` and npm `11.13.0`: TypeScript checking, the service smoke check, and all ten adapter/worker/HTTP tests passed. Tests cover signatures and timestamps, commit before acknowledgement, storage failure returning 503, identity mapping, outgoing request format, Gemini fallback selection, duplicates, ignored messages, uncertain-send retries, permanent errors, rate limiting, and retry exhaustion. Short live text requests to both configured Gemini models succeeded. Missing credentials cause startup to exit with an actionable configuration error.
 
 The SQL migration has **not** been applied to a real Supabase project; the Docker image and CLI forwarding have **not** been run. `skipLibCheck` avoids a conflict in Supabase's browser credential declarations under TypeScript 7; application code still uses strict checking.
 
@@ -46,7 +46,7 @@ The SQL migration has **not** been applied to a real Supabase project; the Docke
 
 1. Open [Relay Console](https://console.relayapp.im). Reuse your stylist agent if one exists, or choose **Create agent**. Set its name, an available handle, and the required subtitle (for example, `Personal fashion stylist`). Save its one-time Agent Token privately. Keep the handle/share link for the phone test. See [Console agents](https://docs.relayapp.im/console/agents). Inspect existing webhooks/runtimes before changing the delivery setup; preserve unrelated subscriptions.
 2. In your Supabase project's **SQL Editor**, run `supabase/migrations/202610030001_relay_event_inbox.sql` once. Get the project URL and a server-only secret key from its API settings. The table enables RLS and revokes client access; only the backend service role gets read/insert/update access. See [Supabase keys](https://supabase.com/docs/guides/getting-started/api-keys) and [RLS](https://supabase.com/docs/guides/database/postgres/row-level-security).
-3. Run `cp .env.example .env`. Enter `RELAY_AGENT_TOKEN`, `SUPABASE_URL`, and `SUPABASE_SECRET_KEY` in that file locally. Keep `RELAY_API_URL` at the production origin for a production token. `.env` is ignored by Git and excluded from the Docker build. Do not paste secrets into chat.
+3. Run `cp .env.example .env`. Enter `RELAY_AGENT_TOKEN`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, and `GEMINI_API_KEY` in that file locally. The default Gemini text models are configured there; keep `RELAY_API_URL` at the production origin for a production token. `.env` is ignored by Git and excluded from the Docker build. Do not paste secrets into chat.
 4. In your own terminal, run `npm run relay:listen`. It loads the token from `.env` and runs the documented official CLI command. Save the signing secret printed by that command as `RELAY_WEBHOOK_SECRET` in `.env`. Keep the forwarding terminal open. This step uses the CLI's local delivery path; do not register a localhost URL as a production subscription. See [local forwarding](https://docs.relayapp.im/cli/reference/listen).
 5. In a second terminal, run `npm start`. Startup reads one Relay chat to verify the token (an empty chat list is valid), checks that the inbox table is readable, then prints `Relay receiver listening...`. `GET http://localhost:3000/health` checks process availability; it does not prove message delivery.
 6. Open the agent's returned share link or handle in the Relay phone app and send `hello` in a direct chat. Confirm a `Relay event committed` log, then `Reply accepted by Relay`, and finally **Your stylist is connected.** in that same phone chat. The phone reply is the required acceptance evidence. Do not send the first message until both forwarding and the server are ready.
@@ -71,7 +71,7 @@ Long work can finish after webhook acknowledgement by sending a later API messag
 
 - `src/integrations/relay.ts`: signature/envelope validation, identity mapping, and SDK sends.
 - `src/server.ts`: `POST /webhooks/relay` and `GET /health`; preserves the raw request body, limits it to 256 KiB, and acknowledges only after the inbox write.
-- `src/services/conversation.ts`: independent fixed-reply behavior; future Gemini integration belongs behind this boundary.
+- `src/services/conversation.ts`: Gemini-powered stylist reply with the configured 3.5 Flash fallback.
 - `src/services/relay-worker.ts`: processes stored messages with bounded retries.
 - `src/db/inbox.ts` and `supabase/migrations/202610030001_relay_event_inbox.sql`: durable acceptance, deduplication, and pending replies.
 - `src/main.ts`, `src/config.ts`, `.env.example`: startup, shutdown, environment configuration, and access checks.
@@ -79,4 +79,4 @@ Long work can finish after webhook acknowledgement by sending a later API messag
 - `scripts/relay.test.ts`, `scripts/smoke.ts`, `scripts/demo.ts`: synthetic integration tests and direct service checks.
 - `Dockerfile`, `.dockerignore`: container deployment preparation.
 
-This folder is its own Git repository, with origin [sama-112/fashion-mhacks](https://github.com/sama-112/fashion-mhacks). Keep Git operations scoped to this project. The UI stays entirely in Relay. Gemini, wardrobe/profile memory, Supabase media storage, shopping, image generation, checkout, and scheduled searches remain deferred.
+This folder is its own Git repository, with origin [sama-112/fashion-mhacks](https://github.com/sama-112/fashion-mhacks). Keep Git operations scoped to this project. The UI stays entirely in Relay. Gemini vision/image handling, wardrobe/profile memory, Supabase media storage, shopping, image generation, checkout, and scheduled searches remain deferred.

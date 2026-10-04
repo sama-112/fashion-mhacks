@@ -21,3 +21,10 @@ export function serverPort(): number {
   }
   return port;
 }
+
+export function geminiModels(): { text: string; fallback: string } {
+  return {
+    text: process.env.GEMINI_TEXT_MODEL?.trim() || "gemini-3.6-flash",
+    fallback: process.env.GEMINI_FALLBACK_MODEL?.trim() || "gemini-3.5-flash",
+  };
+}

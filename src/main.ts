@@ -1,12 +1,18 @@
+import { GoogleGenAI } from "@google/genai";
 import Relay from "@relaymessenger/sdk";
-import { required, relayOrigin, serverPort } from "./config.ts";
+import { geminiModels, required, relayOrigin, serverPort } from "./config.ts";
 import { createInbox } from "./db/inbox.ts";
 import { RelayAdapter, safeRelayError } from "./integrations/relay.ts";
 import { createRelayServer } from "./server.ts";
+import { createConversationHandler } from "./services/conversation.ts";
 import { runWorker } from "./services/relay-worker.ts";
 
 async function main() {
   const port = serverPort();
+  const conversation = createConversationHandler(
+    new GoogleGenAI({ apiKey: required("GEMINI_API_KEY") }),
+    geminiModels(),
+  );
   const adapter = new RelayAdapter(new Relay({
     apiKey: required("RELAY_AGENT_TOKEN"),
     baseURL: relayOrigin(),
@@ -35,7 +41,7 @@ async function main() {
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
-  await runWorker(inbox, adapter, stop.signal);
+  await runWorker(inbox, adapter, conversation, stop.signal);
 }
 
 main().catch(error => {

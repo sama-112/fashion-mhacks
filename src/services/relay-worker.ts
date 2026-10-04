@@ -1,9 +1,14 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { MAX_ATTEMPTS, type EventInbox } from "../db/inbox.ts";
 import { isTerminalSendError, retryAfterSeconds, safeRelayError, type RelayAdapter } from "../integrations/relay.ts";
-import { handleConversation } from "./conversation.ts";
+import type { ConversationHandler } from "./conversation.ts";
 
-export async function processPending(inbox: EventInbox, adapter: RelayAdapter, signal?: AbortSignal) {
+export async function processPending(
+  inbox: EventInbox,
+  adapter: RelayAdapter,
+  handleConversation: ConversationHandler,
+  signal?: AbortSignal,
+) {
   for (const event of await inbox.pending()) {
     if (signal?.aborted) return;
     try {
@@ -20,6 +25,8 @@ export async function processPending(inbox: EventInbox, adapter: RelayAdapter, s
       await inbox.retry(event.eventId, attempts, terminal, retryAfterSeconds(error));
       const detail = error instanceof Error && error.message.startsWith("Supabase inbox")
         ? "Inbox state update failed; the persisted reply can be retried safely."
+        : error instanceof Error && error.message === "Stylist response generation failed."
+          ? "Gemini generation failed; pending message will retry."
         : safeRelayError(error);
       const attention = terminal || attempts >= MAX_ATTEMPTS ? " Manual attention required." : "";
       console.error(`Reply attempt failed: event=${event.eventId} attempt=${attempts}. ${detail}${attention}`);
@@ -27,11 +34,16 @@ export async function processPending(inbox: EventInbox, adapter: RelayAdapter, s
   }
 }
 
-export async function runWorker(inbox: EventInbox, adapter: RelayAdapter, signal: AbortSignal) {
+export async function runWorker(
+  inbox: EventInbox,
+  adapter: RelayAdapter,
+  handleConversation: ConversationHandler,
+  signal: AbortSignal,
+) {
   // One worker per deployment. This polls our durable inbox, not the Relay API.
   while (!signal.aborted) {
     try {
-      await processPending(inbox, adapter, signal);
+      await processPending(inbox, adapter, handleConversation, signal);
     } catch {
       console.error("Inbox worker unavailable; pending work remains stored. Check Supabase.");
     }

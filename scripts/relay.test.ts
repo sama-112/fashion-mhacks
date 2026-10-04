@@ -6,6 +6,7 @@ import Relay, { RelayAPIError, signWebhookHeaders } from "@relaymessenger/sdk";
 import { MAX_ATTEMPTS, type AcceptedEvent, type EventInbox, type PendingEvent } from "../src/db/inbox.ts";
 import { RelayAdapter } from "../src/integrations/relay.ts";
 import { createRelayServer } from "../src/server.ts";
+import { createConversationHandler, type ConversationHandler } from "../src/services/conversation.ts";
 import { processPending } from "../src/services/relay-worker.ts";
 
 // Synthetic credentials, identities, storage and API transport. No provider is contacted.
@@ -14,6 +15,7 @@ const chatId: string = randomUUID();
 const userId: string = randomUUID();
 const messageId: string = randomUUID();
 const agentId: string = randomUUID();
+const testConversation: ConversationHandler = async () => ({ text: "Your stylist is connected." });
 function fixture() {
   return {
     api_version: "v1", webhook_version: "2026-08-30", event_type: "message.received",
@@ -88,7 +90,7 @@ test("human hello preserves identities and sends the documented reply with a sta
   const accepted = verified(adapter, event);
   assert.deepEqual(accepted.message, { text: "hello", userId, conversationId: chatId, messageId });
   await inbox.acceptOnce(accepted);
-  await processPending(inbox, adapter);
+  await processPending(inbox, adapter, testConversation);
   assert.equal(requests.length, 1);
   assert.equal(requests[0]!.url, `https://api.relayapp.im/v1/chats/${chatId}/messages`);
   assert.deepEqual(requests[0]!.body, {
@@ -99,13 +101,30 @@ test("human hello preserves identities and sends the documented reply with a sta
   });
 });
 
+test("Gemini uses 3.6 Flash first and falls back to 3.5 Flash", async () => {
+  const models: string[] = [];
+  const handleConversation = createConversationHandler({
+    models: {
+      generateContent: async params => {
+        models.push(params.model ?? "");
+        if (params.model === "gemini-3.6-flash") throw new Error("Synthetic primary-model failure.");
+        return { text: "Try pairing it with a neutral layer." };
+      },
+    },
+  }, { text: "gemini-3.6-flash", fallback: "gemini-3.5-flash" });
+
+  const reply = await handleConversation({ text: "What should I wear with these jeans?" });
+  assert.deepEqual(models, ["gemini-3.6-flash", "gemini-3.5-flash"]);
+  assert.equal(reply.text, "Try pairing it with a neutral layer.");
+});
+
 test("redelivery after completion produces no second send", async () => {
   const { adapter, inbox, requests } = harness();
   const accepted = verified(adapter, fixture());
   await inbox.acceptOnce(accepted);
-  await processPending(inbox, adapter);
+  await processPending(inbox, adapter, testConversation);
   await inbox.acceptOnce(accepted);
-  await processPending(inbox, adapter);
+  await processPending(inbox, adapter, testConversation);
   assert.equal(requests.length, 1);
 });
 
@@ -114,11 +133,11 @@ test("uncertain sends retry the persisted body and the same key", async () => {
   const accepted = verified(h.adapter, fixture());
   await h.inbox.acceptOnce(accepted);
   h.failSend(new Error("Fixture network outage."));
-  await processPending(h.inbox, h.adapter);
+  await processPending(h.inbox, h.adapter, testConversation);
   assert.equal(h.inbox.rows.get(accepted.eventId)!.attempts, 1);
   assert.equal(h.inbox.rows.get(accepted.eventId)!.done, false);
   h.failSend(null);
-  await processPending(h.inbox, h.adapter);
+  await processPending(h.inbox, h.adapter, testConversation);
   assert.equal(h.requests.length, 2);
   assert.deepEqual(h.requests[0], h.requests[1]);
   assert.equal(h.inbox.rows.get(accepted.eventId)!.done, true);
@@ -128,7 +147,7 @@ test("an exhausted event does not enter an unbounded retry loop", async () => {
   const h = harness();
   await h.inbox.acceptOnce(verified(h.adapter, fixture()));
   h.failSend(new Error("Fixture outage."));
-  for (let i = 0; i < MAX_ATTEMPTS + 2; i++) await processPending(h.inbox, h.adapter);
+  for (let i = 0; i < MAX_ATTEMPTS + 2; i++) await processPending(h.inbox, h.adapter, testConversation);
   assert.equal(h.requests.length, MAX_ATTEMPTS);
 });
 
@@ -136,8 +155,8 @@ test("a permanent Relay error stops automatic attempts", async () => {
   const h = harness();
   await h.inbox.acceptOnce(verified(h.adapter, fixture()));
   h.failSend(new RelayAPIError("fixture", { status: 403 }));
-  await processPending(h.inbox, h.adapter);
-  await processPending(h.inbox, h.adapter);
+  await processPending(h.inbox, h.adapter, testConversation);
+  await processPending(h.inbox, h.adapter, testConversation);
   assert.equal(h.requests.length, 1);
 });
 
@@ -155,7 +174,7 @@ test("rate limiting schedules the next worker attempt after Relay's Retry-After"
   const h = harness();
   await h.inbox.acceptOnce(verified(h.adapter, fixture()));
   h.failSend(new RelayAPIError("fixture", { status: 429, retryAfter: 120 }));
-  await processPending(h.inbox, h.adapter);
+  await processPending(h.inbox, h.adapter, testConversation);
   assert.equal(h.inbox.lastRetryAfter, 120);
 });
 
@@ -201,10 +220,10 @@ test("HTTP receiver rejects unsigned requests and waits for commit before 204", 
   commit();
   assert.equal((await response).status, 204);
   inbox.commitGate = null;
-  await processPending(inbox, adapter);
+  await processPending(inbox, adapter, testConversation);
   assert.equal(requests.length, 1);
   assert.equal((await fetch(`${base}/webhooks/relay`, { method: "POST", headers, body })).status, 204);
-  await processPending(inbox, adapter);
+  await processPending(inbox, adapter, testConversation);
   assert.equal(requests.length, 1);
   inbox.failWrites = true;
   const another = fixture(); const otherBody = JSON.stringify(another);
