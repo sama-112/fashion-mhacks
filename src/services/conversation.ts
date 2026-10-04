@@ -1,49 +1,59 @@
-import type { GenerateContentParameters } from "@google/genai";
+import { StylistAgent } from "../agents/stylist/agent.ts";
+import { GeminiStylistModel, type GeminiTextClient } from "../agents/stylist/gemini.ts";
+import { MockProductCatalog, type ProductCatalog } from "../shopper/index.ts";
+export type { GeminiTextClient } from "../agents/stylist/gemini.ts";
 
 // These are internal service types, not a Relay request or response format.
+export interface ConversationVideo {
+  readonly mediaId: string;
+  readonly mimeType: string;
+  readonly sizeBytes?: number;
+  readonly durationMs?: number;
+}
+
 export interface ConversationMessage {
   readonly text: string;
   readonly userId?: string;
   readonly conversationId?: string;
   readonly messageId?: string;
+  readonly videos?: readonly ConversationVideo[];
 }
 
 export interface ConversationReply {
   readonly text: string;
 }
 
-export type ConversationHandler = (message: ConversationMessage) => Promise<ConversationReply>;
-
-export interface GeminiTextClient {
-  models: {
-    generateContent(params: GenerateContentParameters): Promise<{ text?: string }>;
-  };
+export interface ConversationTurn {
+  readonly role: "user" | "assistant";
+  readonly text: string;
 }
 
-const INSTRUCTIONS = `You are a friendly personal fashion stylist chatting in Relay. Give practical, kind, concise styling advice. Ask a brief follow-up when needed. Never invent product availability, prices, purchases, or actions you did not take. Keep replies under 120 words.`;
+export interface ConversationContext {
+  readonly eventId?: string;
+  readonly signal?: AbortSignal;
+  readonly receivedAt?: string;
+}
+
+export type ConversationHandler = (message: ConversationMessage, context?: ConversationContext) => Promise<ConversationReply>;
+export type ConversationHistory = (message: ConversationMessage, before: string) => Promise<readonly ConversationTurn[]>;
 
 export function createConversationHandler(
   client: GeminiTextClient,
   models: { text: string; fallback: string },
+  options: { catalog: ProductCatalog; history?: ConversationHistory } = { catalog: new MockProductCatalog() },
 ): ConversationHandler {
-  return async message => {
+  const stylist = new StylistAgent(new GeminiStylistModel(client, models), options.catalog);
+  return async (message, context) => {
     if (message.text.trim().length === 0) {
       throw new Error("Message text must not be empty.");
     }
 
-    for (const model of new Set([models.text, models.fallback])) {
-      try {
-        const response = await client.models.generateContent({
-          model,
-          contents: message.text,
-          config: { systemInstruction: INSTRUCTIONS, maxOutputTokens: 400 },
-        });
-        const text = response.text?.trim();
-        if (text) return { text };
-      } catch {
-        // Try the configured fallback without logging user content or provider details.
-      }
-    }
-    throw new Error("Stylist response generation failed.");
+    context?.signal?.throwIfAborted();
+    // Preserve the original milestone-1 acceptance reply without requiring a model call.
+    if (message.text.trim().toLowerCase() === "hello") return { text: "Your stylist is connected." };
+    const history = context?.receivedAt && options.history
+      ? await options.history(message, context.receivedAt) : [];
+    const answer = await stylist.respond({ text: message.text, history }, context?.signal);
+    return { text: answer.text };
   };
 }

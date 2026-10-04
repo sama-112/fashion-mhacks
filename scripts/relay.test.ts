@@ -108,7 +108,9 @@ test("Gemini uses 3.6 Flash first and falls back to 3.5 Flash", async () => {
       generateContent: async params => {
         models.push(params.model ?? "");
         if (params.model === "gemini-3.6-flash") throw new Error("Synthetic primary-model failure.");
-        return { text: "Try pairing it with a neutral layer." };
+        return { text: JSON.stringify({
+          intro: "Try pairing it with a neutral layer.", outfits: [], questions: [], shoppingCriteria: null,
+        }) };
       },
     },
   }, { text: "gemini-3.6-flash", fallback: "gemini-3.5-flash" });

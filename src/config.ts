@@ -28,3 +28,13 @@ export function geminiModels(): { text: string; fallback: string } {
     fallback: process.env.GEMINI_FALLBACK_MODEL?.trim() || "gemini-3.5-flash",
   };
 }
+
+export function conversationMode(): "connection" | "stylist" {
+  const mode = process.env.CONVERSATION_MODE?.trim() || "stylist";
+  if (mode !== "connection" && mode !== "stylist") throw new Error("CONVERSATION_MODE must be connection or stylist.");
+  return mode;
+}
+
+export function geminiVisionModel(): string {
+  return process.env.GEMINI_VISION_MODEL?.trim() || geminiModels().text;
+}

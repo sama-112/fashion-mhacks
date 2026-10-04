@@ -2,6 +2,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { MAX_ATTEMPTS, type EventInbox } from "../db/inbox.ts";
 import { isTerminalSendError, retryAfterSeconds, safeRelayError, type RelayAdapter } from "../integrations/relay.ts";
 import type { ConversationHandler } from "./conversation.ts";
+import { StylistError } from "../agents/stylist/types.ts";
+import { PathwayError } from "../pathways/types.ts";
 
 export async function processPending(
   inbox: EventInbox,
@@ -13,7 +15,7 @@ export async function processPending(
     if (signal?.aborted) return;
     try {
       // Persist the exact answer before sending: retries keep the same body, even after a restart.
-      const text = event.replyText ?? (await handleConversation(event.message)).text;
+      const text = event.replyText ?? (await handleConversation(event.message, { signal, receivedAt: event.receivedAt, eventId: event.eventId })).text;
       if (event.replyText === null) await inbox.saveReply(event.eventId, text);
       await adapter.sendReply(event.eventId, event.message, text, signal);
       await inbox.complete(event.eventId);
@@ -23,9 +25,9 @@ export async function processPending(
       const terminal = isTerminalSendError(error);
       const attempts = event.attempts + 1;
       await inbox.retry(event.eventId, attempts, terminal, retryAfterSeconds(error));
-      const detail = error instanceof Error && error.message.startsWith("Supabase inbox")
+      const detail = error instanceof Error && error.message.startsWith("Supabase")
         ? "Inbox state update failed; the persisted reply can be retried safely."
-        : error instanceof Error && error.message === "Stylist response generation failed."
+        : error instanceof StylistError || error instanceof PathwayError
           ? "Gemini generation failed; pending message will retry."
         : safeRelayError(error);
       const attention = terminal || attempts >= MAX_ATTEMPTS ? " Manual attention required." : "";

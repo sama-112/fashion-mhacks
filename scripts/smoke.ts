@@ -12,4 +12,4 @@ await assert.rejects(
 );
 
 console.log("PASS: local hello reply and empty-input rejection.");
-console.log("This calls the service directly. A live Relay test is still pending.");
+console.log("This checks the local service only; it does not perform a live Relay test.");

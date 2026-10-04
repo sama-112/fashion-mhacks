@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import type { ConversationMessage } from "../services/conversation.ts";
+import type { ConversationMessage, ConversationTurn } from "../services/conversation.ts";
 
 export interface AcceptedEvent {
   eventId: string;
@@ -13,6 +13,7 @@ export interface PendingEvent {
   message: ConversationMessage;
   attempts: number;
   replyText: string | null;
+  receivedAt?: string;
 }
 
 export interface EventInbox {
@@ -62,7 +63,7 @@ export function createInbox(url: string, secretKey: string) {
     },
     async pending(): Promise<PendingEvent[]> {
       const { data, error } = await table()
-        .select("event_id,message,attempts,reply_text")
+        .select("event_id,message,attempts,reply_text,received_at")
         .is("completed_at", null)
         .lt("attempts", MAX_ATTEMPTS)
         .lte("next_attempt_at", new Date().toISOString())
@@ -74,7 +75,29 @@ export function createInbox(url: string, secretKey: string) {
         message: row.message as ConversationMessage,
         attempts: row.attempts as number,
         replyText: row.reply_text as string | null,
+        receivedAt: row.received_at as string,
       }));
+    },
+    async recentConversation(message: ConversationMessage, before: string): Promise<ConversationTurn[]> {
+      if (!message.userId || !message.conversationId) return [];
+      const { data, error } = await table()
+        .select("message,reply_text")
+        .eq("message->>userId", message.userId)
+        .eq("message->>conversationId", message.conversationId)
+        .not("completed_at", "is", null)
+        .not("reply_text", "is", null)
+        .lt("received_at", before)
+        .order("received_at", { ascending: false })
+        .limit(6);
+      check(error);
+      return (data ?? []).reverse().flatMap(row => {
+        const previous = row.message as ConversationMessage | null;
+        if (!previous?.text || typeof row.reply_text !== "string") return [];
+        return [
+          { role: "user" as const, text: previous.text },
+          { role: "assistant" as const, text: row.reply_text },
+        ];
+      });
     },
     async saveReply(eventId: string, text: string) {
       const { error } = await table().update({ reply_text: text }).eq("event_id", eventId);
@@ -93,5 +116,8 @@ export function createInbox(url: string, secretKey: string) {
       }).eq("event_id", eventId);
       check(error);
     },
-  } satisfies EventInbox & { checkAccess(): Promise<void> };
+  } satisfies EventInbox & {
+    checkAccess(): Promise<void>;
+    recentConversation(message: ConversationMessage, before: string): Promise<ConversationTurn[]>;
+  };
 }
