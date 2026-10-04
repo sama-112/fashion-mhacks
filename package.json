@@ -3,25 +3,26 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Fashion stylist backend: milestone 1 connection scaffold",
+  "description": "Relay fashion stylist with a typed Shopper handoff",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "start": "node --env-file-if-exists=.env src/main.ts",
     "relay:listen": "node --env-file-if-exists=.env scripts/relay-listen.ts",
+    "relay:connect": "node --env-file-if-exists=.env scripts/relay-listen.ts --configure",
     "check": "tsc --noEmit",
     "demo": "node scripts/demo.ts",
     "shopper:search": "node --env-file-if-exists=.env scripts/shopper-search.ts",
     "smoke": "node scripts/smoke.ts",
-    "test": "node --test scripts/relay.test.ts scripts/shopper.test.ts scripts/shopper-gemini.test.ts"
+    "test": "node --test scripts/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "24.19.1",
     "typescript": "7.0.2"
   },
   "dependencies": {
-    "@google/genai": "^2.27.0",
+    "@google/genai": "2.27.0",
     "@relaymessenger/sdk": "0.5.1",
     "@supabase/supabase-js": "2.117.2"
   }

@@ -1,6 +1,14 @@
 import Relay, { RelayAPIError, type WebhookHeaders } from "@relaymessenger/sdk";
 import type { AcceptedEvent } from "../db/inbox.ts";
-import type { ConversationMessage } from "../services/conversation.ts";
+import type { ConversationMessage, ConversationVideo } from "../services/conversation.ts";
+import { MAX_VIDEO_BYTES, MAX_VIDEO_SECONDS, SUPPORTED_VIDEO_TYPES } from "../wardrobe/types.ts";
+
+export class RelayVideoError extends Error {
+  constructor(message = "I couldn't download that video. Please send it again as an MP4, MOV or WebM clip up to 50 MiB and two minutes.") {
+    super(message);
+    this.name = "RelayVideoError";
+  }
+}
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -52,10 +60,19 @@ export class RelayAdapter {
         }
         return item.value;
       }).filter(Boolean).join("\n");
-      // Milestone 1 responds to human direct messages. Keep every raw part in the inbox.
+      const videos: ConversationVideo[] = data.parts.flatMap(part => {
+        const item = object(part);
+        if (item.type !== "media" || typeof item.mime_type !== "string" || !item.mime_type.startsWith("video/")) return [];
+        return [{ mediaId: id(item.id), mimeType: item.mime_type,
+          ...(typeof item.size_bytes === "number" ? { sizeBytes: item.size_bytes } : {}),
+          ...(typeof item.duration_ms === "number" ? { durationMs: item.duration_ms } : {}),
+        }];
+      });
+      if (text.length > 10000) throw new Error("Relay message text is too long.");
+      // Keep every raw part in the inbox; only human direct messages start work.
       if (sender.kind === "user" && sender.is_me === false &&
-          data.direction === "inbound" && chat.is_group === false && text.trim()) {
-        message = { text, userId, conversationId, messageId };
+          data.direction === "inbound" && chat.is_group === false && (text.trim() || videos.length)) {
+        message = { text, userId, conversationId, messageId, ...(videos.length ? { videos } : {}) };
       }
     }
     return { eventId, agentId, payload, message };
@@ -63,6 +80,55 @@ export class RelayAdapter {
 
   async checkAccess(): Promise<void> {
     await this.client.chats.listChats({ limit: 1 });
+  }
+
+  async downloadVideo(message: ConversationMessage, video: ConversationVideo, signal?: AbortSignal): Promise<Blob> {
+    const deadline = AbortSignal.any([AbortSignal.timeout(60000), ...(signal ? [signal] : [])]);
+    try {
+      if (!(SUPPORTED_VIDEO_TYPES as readonly string[]).includes(video.mimeType) ||
+          (video.sizeBytes !== undefined && (!Number.isFinite(video.sizeBytes) || video.sizeBytes <= 0 || video.sizeBytes > MAX_VIDEO_BYTES)) ||
+          (video.durationMs !== undefined && (!Number.isFinite(video.durationMs) || video.durationMs > MAX_VIDEO_SECONDS * 1000))) {
+        throw new RelayVideoError();
+      }
+      if (!message.messageId || !message.userId || !message.conversationId) throw new RelayVideoError();
+      const original = await this.client.messages.retrieve(message.messageId, { signal: deadline });
+      if (original.id !== message.messageId || original.chat_id !== message.conversationId || original.is_from_me ||
+          original.from_handle?.id !== message.userId || original.from_handle.kind !== "user" ||
+          !original.parts?.some(part => part.type === "media" && part.id === video.mediaId && part.mime_type === video.mimeType)) {
+        throw new RelayVideoError();
+      }
+      // Refresh signed links through the authenticated API, never use a URL from user text.
+      const attachment = await this.client.attachments.retrieve(video.mediaId, { signal: deadline });
+      if (attachment.id !== video.mediaId || attachment.status !== "complete" ||
+          attachment.content_type !== video.mimeType || !attachment.download_url ||
+          attachment.size_bytes <= 0 || attachment.size_bytes > MAX_VIDEO_BYTES ||
+          (attachment.duration_ms ?? 0) > MAX_VIDEO_SECONDS * 1000) throw new RelayVideoError();
+      const url = new URL(attachment.download_url);
+      if (url.protocol !== "https:" || url.username || url.password || url.port ||
+          url.hostname === "localhost" || /^[\d.]+$/.test(url.hostname) || url.hostname.includes(":")) throw new RelayVideoError();
+      const response = await fetch(url, { signal: deadline, redirect: "error" });
+      if (!response.ok || !response.body || Number(response.headers.get("content-length") ?? 0) > MAX_VIDEO_BYTES) {
+        await response.body?.cancel();
+        throw new RelayVideoError();
+      }
+      const reader = response.body.getReader();
+      const chunks: Uint8Array<ArrayBuffer>[] = [];
+      let bytes = 0;
+      try {
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          bytes += chunk.value.byteLength;
+          if (bytes > MAX_VIDEO_BYTES) throw new RelayVideoError();
+          chunks.push(new Uint8Array(chunk.value));
+        }
+      } finally { await reader.cancel(); }
+      if (!bytes || bytes !== attachment.size_bytes) throw new RelayVideoError();
+      return new Blob(chunks, { type: video.mimeType });
+    } catch {
+      signal?.throwIfAborted();
+      throw new RelayVideoError();
+    }
   }
 
   async sendReply(eventId: string, message: ConversationMessage, text: string, signal?: AbortSignal) {
