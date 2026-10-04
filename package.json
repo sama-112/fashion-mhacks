@@ -1,0 +1,26 @@
+{
+  "name": "fashion-mhacks",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Fashion stylist backend: milestone 1 connection scaffold",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/main.ts",
+    "relay:listen": "node --env-file-if-exists=.env scripts/relay-listen.ts",
+    "check": "tsc --noEmit",
+    "demo": "node scripts/demo.ts",
+    "smoke": "node scripts/smoke.ts",
+    "test": "node --test scripts/relay.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@relaymessenger/sdk": "0.5.1",
+    "@supabase/supabase-js": "2.117.2"
+  }
+}

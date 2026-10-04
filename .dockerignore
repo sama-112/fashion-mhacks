@@ -1,0 +1,7 @@
+.git
+.env
+.env.*
+node_modules
+scripts
+supabase
+*.log
