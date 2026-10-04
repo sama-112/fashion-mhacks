@@ -38,3 +38,7 @@ export function conversationMode(): "connection" | "stylist" {
 export function geminiVisionModel(): string {
   return process.env.GEMINI_VISION_MODEL?.trim() || geminiModels().text;
 }
+
+export function geminiImageModel(): string {
+  return process.env.GEMINI_IMAGE_MODEL?.trim() || "gemini-3.1-flash-image";
+}

@@ -11,7 +11,7 @@ const COMMANDS = 'Reply with "change 2: navy shirt", "remove 2", or "add black j
 
 export function formatWardrobeReview(items: readonly WardrobeCandidate[]): string {
   const list = items.length
-    ? items.map((item, index) => `${index + 1}. ${item.description}${item.uncertain ? " (please check; unclear in the video)" : ""}`).join("\n")
+    ? items.map((item, index) => `${index + 1}. ${item.description}${item.uncertain ? " (please check; details unclear)" : ""}`).join("\n")
     : "No clothing items are in this draft. Add an item or send a clearer closet video.";
   return `Wardrobe draft — please check each item. These items are not saved yet.\n\n${list}\n\n${COMMANDS}`;
 }

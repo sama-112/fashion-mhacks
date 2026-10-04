@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import Relay from "@relaymessenger/sdk";
-import { conversationMode, geminiModels, geminiVisionModel, required, relayOrigin, serverPort } from "./config.ts";
+import { conversationMode, geminiImageModel, geminiModels, geminiVisionModel, required, relayOrigin, serverPort } from "./config.ts";
 import { createInbox } from "./db/inbox.ts";
 import { RelayAdapter, safeRelayError } from "./integrations/relay.ts";
 import { createRelayServer } from "./server.ts";
@@ -10,6 +10,9 @@ import { createStylistStore } from "./db/stylist-store.ts";
 import { GeminiWardrobeAnalyzer } from "./wardrobe/index.ts";
 import { runWorker } from "./services/relay-worker.ts";
 import { createGoogleSearchGroundedShopper } from "./shopper/index.ts";
+import { GeminiOutfitImages } from "./images/outfits.ts";
+import { createWeeklyTick } from "./weekly/scheduler.ts";
+import { GeminiPurchaseInterpreter } from "./purchases/index.ts";
 
 async function main() {
   const port = serverPort();
@@ -24,6 +27,7 @@ async function main() {
   }));
   let conversation: ConversationHandler = async message => ({ text: message.text.trim().toLowerCase() === "hello"
     ? "Your stylist is connected." : "The connection test is ready. Send hello; styling will be available after setup." });
+  let maintenance: (() => Promise<void>) | undefined;
   if (mode === "stylist") {
     const client = new GoogleGenAI({ apiKey: required("GEMINI_API_KEY") });
     const models = geminiModels();
@@ -33,6 +37,7 @@ async function main() {
     });
     const store = createStylistStore(required("SUPABASE_URL"), required("SUPABASE_SECRET_KEY"));
     await store.checkAccess();
+    maintenance = createWeeklyTick(store);
     conversation = createStylistConversation({
       client, models, catalog: {
         search: criteria => researcher.search({
@@ -45,7 +50,11 @@ async function main() {
       }, store,
       analyzer: new GeminiWardrobeAnalyzer(client, { model: geminiVisionModel() }),
       downloadVideo: (message, video, signal) => adapter.downloadVideo(message, video, signal),
+      downloadPhoto: (message, photo, signal) => adapter.downloadPhoto(message, photo, signal),
+      downloadAudio: (message,audio,signal) => adapter.downloadAudio(message,audio,signal),
+      purchases:new GeminiPurchaseInterpreter(client,models),
       history: inbox.recentConversation,
+      images: new GeminiOutfitImages(client,geminiImageModel(),store.imageAssets,(image,signal) => adapter.uploadImage(image,signal)),
     });
   }
   try {
@@ -69,7 +78,7 @@ async function main() {
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
-  await runWorker(inbox, adapter, conversation, stop.signal);
+  await runWorker(inbox, adapter, conversation, stop.signal,maintenance);
 }
 
 main().catch(error => {

@@ -1,6 +1,7 @@
 import type { ConversationTurn } from "../../services/conversation.ts";
 import type { GroundedShopperResult, ShopperCriteria, ShopperResult } from "../../shopper/types.ts";
 import type { PathwayState } from "../../pathways/types.ts";
+import type { ShoppingPreferences } from "../../preferences/types.ts";
 
 export interface WardrobeItem {
   readonly id: string;
@@ -12,6 +13,8 @@ export interface StylistRequest {
   readonly history?: readonly ConversationTurn[];
   readonly wardrobe?: readonly WardrobeItem[];
   readonly preferences?: PathwayState;
+  readonly shoppingPreferences?: ShoppingPreferences;
+  readonly avoidRecentProducts?: boolean;
 }
 
 export interface OutfitPiece {

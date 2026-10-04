@@ -14,10 +14,13 @@ export async function processPending(
   for (const event of await inbox.pending()) {
     if (signal?.aborted) return;
     try {
+      if (inbox.isPending && !(await inbox.isPending(event.eventId))) continue;
       // Persist the exact answer before sending: retries keep the same body, even after a restart.
-      const text = event.replyText ?? (await handleConversation(event.message, { signal, receivedAt: event.receivedAt, eventId: event.eventId })).text;
-      if (event.replyText === null) await inbox.saveReply(event.eventId, text);
-      await adapter.sendReply(event.eventId, event.message, text, signal);
+      const reply = event.replyText !== null ? { text: event.replyText, images: event.replyMedia }
+        : await handleConversation(event.message, { signal, receivedAt: event.receivedAt, eventId: event.eventId });
+      if ("skipDelivery" in reply && reply.skipDelivery) { await inbox.complete(event.eventId); continue; }
+      if (event.replyText === null) await inbox.saveReply(event.eventId, reply.text, reply.images);
+      await adapter.sendReply(event.eventId, event.message, reply.text, signal, reply.images);
       await inbox.complete(event.eventId);
       console.log(`Reply accepted by Relay: event=${event.eventId} chat=${event.message.conversationId}`);
     } catch (error) {
@@ -41,10 +44,12 @@ export async function runWorker(
   adapter: RelayAdapter,
   handleConversation: ConversationHandler,
   signal: AbortSignal,
+  maintenance?: () => Promise<void>,
 ) {
   // One worker per deployment. This polls our durable inbox, not the Relay API.
   while (!signal.aborted) {
     try {
+      try { await maintenance?.(); } catch { console.error("Weekly scheduler unavailable; existing messages will still be processed."); }
       await processPending(inbox, adapter, handleConversation, signal);
     } catch {
       console.error("Inbox worker unavailable; pending work remains stored. Check Supabase.");

@@ -10,6 +10,8 @@ export interface ConversationVideo {
   readonly sizeBytes?: number;
   readonly durationMs?: number;
 }
+export interface ConversationPhoto { readonly mediaId: string; readonly mimeType: string; readonly sizeBytes?: number }
+export interface ConversationAudio extends ConversationPhoto { readonly durationMs?: number }
 
 export interface ConversationMessage {
   readonly text: string;
@@ -17,10 +19,17 @@ export interface ConversationMessage {
   readonly conversationId?: string;
   readonly messageId?: string;
   readonly videos?: readonly ConversationVideo[];
+  readonly photos?: readonly ConversationPhoto[];
+  readonly audio?: readonly ConversationAudio[];
+  // Only our database scheduler creates this flag; webhook input cannot set it.
+  readonly deliveryKind?: "weekly";
 }
 
+export interface ConversationImage { readonly attachmentId: string; readonly mimeType: string }
 export interface ConversationReply {
   readonly text: string;
+  readonly images?: readonly ConversationImage[];
+  readonly skipDelivery?: true;
 }
 
 export interface ConversationTurn {

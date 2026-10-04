@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import type { ConversationMessage, ConversationTurn } from "../services/conversation.ts";
+import type { ConversationImage, ConversationMessage, ConversationTurn } from "../services/conversation.ts";
 
 export interface AcceptedEvent {
   eventId: string;
@@ -13,13 +13,15 @@ export interface PendingEvent {
   message: ConversationMessage;
   attempts: number;
   replyText: string | null;
+  replyMedia?: readonly ConversationImage[];
   receivedAt?: string;
 }
 
 export interface EventInbox {
   acceptOnce(event: AcceptedEvent): Promise<void>;
   pending(): Promise<PendingEvent[]>;
-  saveReply(eventId: string, text: string): Promise<void>;
+  isPending?(eventId: string): Promise<boolean>;
+  saveReply(eventId: string, text: string, images?: readonly ConversationImage[]): Promise<void>;
   complete(eventId: string): Promise<void>;
   retry(eventId: string, attempts: number, terminal: boolean, retryAfterSeconds?: number): Promise<void>;
 }
@@ -63,7 +65,7 @@ export function createInbox(url: string, secretKey: string) {
     },
     async pending(): Promise<PendingEvent[]> {
       const { data, error } = await table()
-        .select("event_id,message,attempts,reply_text,received_at")
+        .select("event_id,message,attempts,reply_text,reply_media,received_at")
         .is("completed_at", null)
         .lt("attempts", MAX_ATTEMPTS)
         .lte("next_attempt_at", new Date().toISOString())
@@ -75,6 +77,7 @@ export function createInbox(url: string, secretKey: string) {
         message: row.message as ConversationMessage,
         attempts: row.attempts as number,
         replyText: row.reply_text as string | null,
+        replyMedia: row.reply_media as ConversationImage[],
         receivedAt: row.received_at as string,
       }));
     },
@@ -99,8 +102,13 @@ export function createInbox(url: string, secretKey: string) {
         ];
       });
     },
-    async saveReply(eventId: string, text: string) {
-      const { error } = await table().update({ reply_text: text }).eq("event_id", eventId);
+    async isPending(eventId: string) {
+      const { data, error } = await table().select("event_id").eq("event_id",eventId).is("completed_at",null).maybeSingle();
+      check(error);
+      return Boolean(data);
+    },
+    async saveReply(eventId: string, text: string, images: readonly ConversationImage[] = []) {
+      const { error } = await table().update({ reply_text: text, reply_media: images }).eq("event_id", eventId);
       check(error);
     },
     async complete(eventId: string) {
